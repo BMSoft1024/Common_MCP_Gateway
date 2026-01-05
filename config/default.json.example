@@ -1,0 +1,55 @@
+{
+  "common-mcp": {
+    "version": "1.0.0",
+    "globalDefaults": {
+      "timeout": 30000,
+      "retryAttempts": 3,
+      "retryDelay": 1000,
+      "circuitBreaker": {
+        "enabled": true,
+        "failureThreshold": 5,
+        "resetTimeout": 60000
+      }
+    },
+    "downstreamServers": {
+      "fetch": {
+        "command": "uvx",
+        "args": ["mcp-server-fetch"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {}
+      },
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/your/workspace"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {},
+        "disabled": false
+      },
+      "memory": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {
+          "MEMORY_FILE_PATH": "memory.json"
+        }
+      },
+      "time": {
+        "command": "python",
+        "args": ["-m", "mcp_server_time"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {}
+      }
+    },
+    "logging": {
+      "level": "INFO",
+      "format": "json",
+      "file": "${HOME}/.common-mcp/logs/common-mcp.log",
+      "maxSize": "10MB",
+      "maxFiles": 5
+    }
+  }
+}

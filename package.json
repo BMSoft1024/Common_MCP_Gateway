@@ -1,0 +1,65 @@
+{
+  "name": "@bmsoft1024/common-mcp-gateway",
+  "version": "1.0.0",
+  "description": "Common MCP Gateway - Aggregates multiple MCP servers with robust timeout and error handling",
+  "main": "dist/index.js",
+  "bin": {
+    "common-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src --ext .ts",
+    "prepare": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BMSoft1024/Common_MCP_Gateway.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BMSoft1024/Common_MCP_Gateway/issues"
+  },
+  "homepage": "https://github.com/BMSoft1024/Common_MCP_Gateway#readme",
+  "keywords": [
+    "mcp",
+    "gateway",
+    "aggregator",
+    "proxy",
+    "model-context-protocol",
+    "windsurf",
+    "cursor",
+    "cascade",
+    "timeout",
+    "retry",
+    "circuit-breaker"
+  ],
+  "author": "BMSoft1024",
+  "license": "Apache-2.0",
+  "preferGlobal": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "execa": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "uuid": "^11.0.4",
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.5",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3"
+  }
+}

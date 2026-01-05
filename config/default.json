@@ -1,0 +1,111 @@
+{
+  "common-mcp": {
+    "version": "1.0.0",
+    "globalDefaults": {
+      "timeout": 30000,
+      "retryAttempts": 3,
+      "retryDelay": 1000,
+      "circuitBreaker": {
+        "enabled": true,
+        "failureThreshold": 5,
+        "resetTimeout": 60000
+      }
+    },
+    "downstreamServers": {
+      "adb-mcp-alt": {
+        "command": "npx",
+        "args": ["-y", "adb-mcp"],
+        "timeout": 45000,
+        "retryAttempts": 3,
+        "env": {}
+      },
+      "android-adb-mcp": {
+        "command": "cmd",
+        "args": ["/c", "npx", "-y", "@landicefu/android-adb-mcp-server"],
+        "timeout": 45000,
+        "retryAttempts": 3,
+        "env": {}
+      },
+      "cursor-playwright": {
+        "command": "npx",
+        "args": ["-y", "@executeautomation/playwright-mcp-server"],
+        "timeout": 60000,
+        "retryAttempts": 2,
+        "env": {}
+      },
+      "deepwiki": {
+        "command": "npx",
+        "args": ["-y", "mcp-remote", "https://mcp.deepwiki.com/mcp"],
+        "timeout": 120000,
+        "retryAttempts": 2,
+        "env": {}
+      },
+      "fetch": {
+        "command": "uvx",
+        "args": ["mcp-server-fetch"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {}
+      },
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/your/workspace"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {}
+      },
+      "memory": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {
+          "MEMORY_FILE_PATH": "memory.json"
+        }
+      },
+      "open-websearch": {
+        "command": "npx",
+        "args": ["-y", "@iflow-mcp/open-websearch"],
+        "timeout": 60000,
+        "retryAttempts": 2,
+        "env": {
+          "ALLOWED_SEARCH_ENGINES": "duckduckgo,bing,exa",
+          "DEFAULT_SEARCH_ENGINE": "duckduckgo",
+          "MODE": "stdio",
+          "PORT": "3001"
+        }
+      },
+      "perplexity-ask": {
+        "command": "npx",
+        "args": ["-y", "server-perplexity-ask"],
+        "timeout": 120000,
+        "retryAttempts": 2,
+        "env": {
+          "PERPLEXITY_API_KEY": "your-api-key-here"
+        },
+        "disabled": true
+      },
+      "sequential-thinking": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+        "timeout": 60000,
+        "retryAttempts": 2,
+        "env": {}
+      },
+      "time": {
+        "command": "python",
+        "args": ["-m", "mcp_server_time"],
+        "timeout": 30000,
+        "retryAttempts": 3,
+        "env": {}
+      }
+    },
+    "logging": {
+      "level": "INFO",
+      "format": "json",
+      "file": "${HOME}/.common-mcp/logs/common-mcp.log",
+      "maxSize": "10MB",
+      "maxFiles": 5
+    }
+  }
+}

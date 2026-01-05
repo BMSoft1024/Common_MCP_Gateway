@@ -1,0 +1,84 @@
+{
+  "mcpServers": {
+    "common-mcp-gateway": {
+      "command": "common-mcp",
+      "args": [],
+      "disabled": false,
+      "env": {}
+    },
+    "adb-mcp-alt": {
+      "command": "npx",
+      "args": ["-y", "adb-mcp"],
+      "disabled": true,
+      "env": {}
+    },
+    "android-adb-mcp": {
+      "command": "npx",
+      "args": ["-y", "@landicefu/android-adb-mcp-server"],
+      "disabled": true,
+      "env": {}
+    },
+    "cursor-playwright": {
+      "command": "npx",
+      "args": ["-y", "@executeautomation/playwright-mcp-server"],
+      "disabled": true
+    },
+    "deepwiki": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.deepwiki.com/mcp"],
+      "disabled": true,
+      "env": {}
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "disabled": true,
+      "env": {}
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/your/workspace"],
+      "disabled": true,
+      "env": {}
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "disabled": true,
+      "env": {
+        "MEMORY_FILE_PATH": "memory.json"
+      }
+    },
+    "open-websearch": {
+      "command": "npx",
+      "args": ["-y", "@iflow-mcp/open-websearch"],
+      "disabled": true,
+      "env": {
+        "ALLOWED_SEARCH_ENGINES": "duckduckgo,bing,exa",
+        "DEFAULT_SEARCH_ENGINE": "duckduckgo",
+        "MODE": "stdio",
+        "PORT": "3001"
+      }
+    },
+    "perplexity-ask": {
+      "command": "npx",
+      "args": ["-y", "server-perplexity-ask"],
+      "disabled": true,
+      "env": {
+        "PERPLEXITY_API_KEY": "your-api-key-here"
+      }
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "disabled": true,
+      "env": {}
+    },
+    "time": {
+      "command": "python",
+      "args": ["-m", "mcp_server_time"],
+      "disabled": true,
+      "env": {}
+    }
+  }
+}
