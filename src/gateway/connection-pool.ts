@@ -24,9 +24,39 @@ export class ConnectionPool {
     config: DownstreamServerConfig,
     circuitBreakerConfig: any
   ): Promise<DownstreamConnection> {
+    if (config.disabled) {
+      throw new Error(`Server "${serverId}" is disabled and cannot create connection`);
+    }
+
     if (this.connections.has(serverId)) {
-      this.logger.warn(`Connection already exists for ${serverId}, returning existing`);
-      return this.connections.get(serverId)!;
+      const existingConnection = this.connections.get(serverId)!;
+      
+      // Check if connection is still alive
+      if (existingConnection.isConnected) {
+        try {
+          // Test connection health by checking if client is still connected
+          // If the connection is broken, this will throw an error
+          if (!existingConnection.client) {
+            throw new Error('Client is null');
+          }
+          
+          this.logger.warn(`Connection already exists for ${serverId}, returning existing`);
+          return existingConnection;
+        } catch (error) {
+          // Connection is stale, close and recreate
+          this.logger.warn({
+            message: 'Cached connection is stale, recreating',
+            serverId,
+            error: (error as Error).message
+          });
+          await this.closeConnection(serverId);
+          // Continue to create new connection below
+        }
+      } else {
+        // Connection marked as disconnected, remove and recreate
+        this.logger.warn(`Connection for ${serverId} is disconnected, recreating`);
+        this.connections.delete(serverId);
+      }
     }
 
     this.logger.info({

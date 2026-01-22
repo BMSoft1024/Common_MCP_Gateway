@@ -19,7 +19,9 @@ const io = new SocketIOServer(httpServer, {
 });
 
 const PORT = 1525;
-const CONFIG_PATH = path.join(process.env.USERPROFILE || process.env.HOME || '', '.common-mcp', 'config.json');
+const CONFIG_PATH = process.env.COMMON_MCP_CONFIG || path.join(process.env.USERPROFILE || process.env.HOME || '', '.common-mcp', 'config.json');
+const API_SECRET = process.env.GATEWAY_MANAGER_SECRET || 'change-me-in-production';
+const LOCALHOST_ONLY = process.env.GATEWAY_MANAGER_ALLOW_REMOTE !== 'true';
 
 const MCPServerSchema = z.object({
   command: z.string(),
@@ -29,6 +31,7 @@ const MCPServerSchema = z.object({
   disabledTools: z.array(z.string()).optional(),
   timeout: z.number().min(1000).max(300000).optional(),
   retries: z.number().min(0).max(10).optional(),
+  retryAttempts: z.number().min(0).max(10).optional(),
   circuitBreakerThreshold: z.number().min(1).max(100).optional(),
   fallbackServers: z.array(z.string()).optional()
 });
@@ -75,6 +78,42 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+function localhostOnlyMiddleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (LOCALHOST_ONLY) {
+    const clientIp = req.ip || req.socket.remoteAddress || '';
+    const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1';
+    if (!isLocalhost) {
+      res.status(403).json({ error: 'Access denied: localhost only' });
+      return;
+    }
+  }
+  next();
+}
+
+function apiAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (API_SECRET === 'change-me-in-production') {
+    next();
+    return;
+  }
+  
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Missing Bearer token' });
+    return;
+  }
+  
+  const token = authHeader.slice(7);
+  if (token !== API_SECRET) {
+    res.status(401).json({ error: 'Invalid token' });
+    return;
+  }
+  
+  next();
+}
+
+app.use(localhostOnlyMiddleware);
+app.use('/api', apiAuthMiddleware);
 
 let currentConfig: any = {};
 

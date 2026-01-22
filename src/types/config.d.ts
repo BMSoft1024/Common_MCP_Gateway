@@ -20,6 +20,7 @@ export interface DownstreamServerConfig {
   healthCheck?: HealthCheckConfig;
   disabled?: boolean;
   fallbackServers?: string[];
+  circuitBreakerThreshold?: number;
 }
 
 export interface LoggingConfig {

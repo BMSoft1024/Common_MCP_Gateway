@@ -61,10 +61,14 @@ export class CommonMCPGateway {
           .map(
           async ([serverId, serverConfig]) => {
             try {
+              const circuitBreakerConfig = {
+                ...this.config.globalDefaults.circuitBreaker,
+                failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
+              };
               const connection = await this.connectionPool.createConnection(
                 serverId,
                 serverConfig,
-                this.config.globalDefaults.circuitBreaker
+                circuitBreakerConfig
               );
 
               const result = await connection.client.request(
@@ -135,7 +139,7 @@ export class CommonMCPGateway {
       const [serverId, toolName] = this.parseToolName(name);
       
       if (!serverId || !toolName) {
-        throw new Error(`Invalid tool name format: ${name}. Expected: serverId/toolName`);
+        throw new Error(`Invalid tool name format: ${name}. Expected: serverId__toolName (double underscore separator)`);
       }
 
       const serverConfig = this.config.downstreamServers[serverId];
@@ -143,15 +147,23 @@ export class CommonMCPGateway {
         throw new Error(`Unknown downstream server: ${serverId}`);
       }
 
+      if (serverConfig.disabled) {
+        throw new Error(`Server "${serverId}" is disabled and cannot be called`);
+      }
+
       try {
+        const circuitBreakerConfig = {
+          ...this.config.globalDefaults.circuitBreaker,
+          failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
+        };
         const connection = await this.connectionPool.createConnection(
           serverId,
           serverConfig,
-          this.config.globalDefaults.circuitBreaker
+          circuitBreakerConfig
         );
 
         const timeout = serverConfig.timeout || this.config.globalDefaults.timeout;
-        const retryAttempts = serverConfig.retryAttempts || this.config.globalDefaults.retryAttempts;
+        const retryAttempts = serverConfig.retryAttempts || serverConfig.retries || this.config.globalDefaults.retryAttempts;
 
         const result = await connection.circuitBreaker.execute(async () => {
           return await connection.retryEngine.executeWithRetry(
@@ -209,8 +221,114 @@ export class CommonMCPGateway {
           toolName,
           error: (error as Error).message
         });
+
+        // Try fallback servers if configured
+        const serverConfig = this.config.downstreamServers[serverId];
+        if (serverConfig.fallbackServers && serverConfig.fallbackServers.length > 0) {
+          this.logger.warn({
+            message: 'Attempting fallback servers',
+            requestId,
+            serverId,
+            fallbackServers: serverConfig.fallbackServers
+          });
+
+          for (const fallbackServerId of serverConfig.fallbackServers) {
+            try {
+              const fallbackResult = await this.executeToolCall(
+                fallbackServerId,
+                toolName,
+                args,
+                requestId
+              );
+              
+              this.logger.info({
+                message: 'Fallback server successful',
+                requestId,
+                primaryServer: serverId,
+                fallbackServer: fallbackServerId,
+                toolName
+              });
+              
+              return fallbackResult;
+            } catch (fallbackError) {
+              this.logger.warn({
+                message: 'Fallback server failed',
+                requestId,
+                primaryServer: serverId,
+                fallbackServer: fallbackServerId,
+                toolName,
+                error: (fallbackError as Error).message
+              });
+            }
+          }
+        }
+
         throw error;
       }
+    });
+  }
+
+  private async executeToolCall(serverId: string, toolName: string, args: any, requestId: string): Promise<any> {
+    const serverConfig = this.config.downstreamServers[serverId];
+    if (!serverConfig) {
+      throw new Error(`Unknown downstream server: ${serverId}`);
+    }
+
+    if (serverConfig.disabled) {
+      throw new Error(`Server "${serverId}" is disabled and cannot be called`);
+    }
+
+    const circuitBreakerConfig = {
+      ...this.config.globalDefaults.circuitBreaker,
+      failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
+    };
+    const connection = await this.connectionPool.createConnection(
+      serverId,
+      serverConfig,
+      circuitBreakerConfig
+    );
+
+    const timeout = serverConfig.timeout || this.config.globalDefaults.timeout;
+    const retryAttempts = serverConfig.retryAttempts || serverConfig.retries || this.config.globalDefaults.retryAttempts;
+
+    return await connection.circuitBreaker.execute(async () => {
+      return await connection.retryEngine.executeWithRetry(
+        async () => {
+          return await new Promise<any>((resolve, reject) => {
+            this.timeoutWatchdog.start(requestId, timeout, () => {
+              reject(new Error(`Request timed out after ${timeout}ms`));
+            });
+
+            connection.client.request(
+              { 
+                method: 'tools/call',
+                params: {
+                  name: toolName,
+                  arguments: args
+                }
+              } as any,
+              CallToolResultSchema
+            )
+            .then((result: any) => {
+              this.timeoutWatchdog.cancel(requestId);
+              resolve(result);
+            })
+            .catch((error: any) => {
+              this.timeoutWatchdog.cancel(requestId);
+              reject(error);
+            });
+          });
+        },
+        {
+          maxAttempts: retryAttempts,
+          baseDelay: this.config.globalDefaults.retryDelay
+        },
+        {
+          requestId,
+          serverId,
+          tool: toolName
+        }
+      );
     });
   }
 

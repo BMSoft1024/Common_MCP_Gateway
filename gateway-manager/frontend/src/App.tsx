@@ -313,19 +313,20 @@ function App() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium mb-2">Timeout (ms)</label>
+                  <label className="block text-sm font-medium mb-2">Timeout (seconds)</label>
                   <input
                     type="number"
-                    value={formData.server.timeout || 30000}
+                    value={Math.round((formData.server.timeout || 30000) / 1000)}
                     onChange={(e) => setFormData({ 
                       ...formData, 
-                      server: { ...formData.server, timeout: parseInt(e.target.value) || 30000 }
+                      server: { ...formData.server, timeout: (parseInt(e.target.value) || 30) * 1000 }
                     })}
                     className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                    placeholder="30000"
-                    min="1000"
-                    max="300000"
+                    placeholder="30"
+                    min="1"
+                    max="300"
                   />
+                  <p className="text-xs text-gray-500 mt-1">Value in seconds (1-300s)</p>
                 </div>
 
                 <div>
@@ -542,18 +543,19 @@ function App() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium mb-2">Timeout (ms)</label>
+                      <label className="block text-sm font-medium mb-2">Timeout (seconds)</label>
                       <input
                         type="number"
-                        value={formData.server.timeout || 30000}
+                        value={Math.round((formData.server.timeout || 30000) / 1000)}
                         onChange={(e) => setFormData({ 
                           ...formData, 
-                          server: { ...formData.server, timeout: parseInt(e.target.value) }
+                          server: { ...formData.server, timeout: (parseInt(e.target.value) || 30) * 1000 }
                         })}
-                        min="1000"
-                        max="300000"
+                        min="1"
+                        max="300"
                         className="w-full bg-dark-card border border-dark-border rounded px-4 py-2 text-white"
                       />
+                      <p className="text-xs text-gray-500 mt-1">Value in seconds (1-300s)</p>
                     </div>
 
                     <div>

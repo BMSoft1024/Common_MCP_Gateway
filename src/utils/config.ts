@@ -1,5 +1,5 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
 import { homedir } from 'os';
 import { GatewayConfig, CommonMCPConfig } from '../types/config';
 
@@ -25,9 +25,31 @@ export function loadConfig(configPath?: string): CommonMCPConfig {
     return validateAndExpandConfig(config['common-mcp']);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return getDefaultConfig();
+      const defaultConfig = getDefaultConfig();
+      createDefaultConfigFile(path, defaultConfig);
+      return defaultConfig;
     }
     throw error;
+  }
+}
+
+function createDefaultConfigFile(configPath: string, config: CommonMCPConfig): void {
+  try {
+    const configDir = dirname(configPath);
+    if (!existsSync(configDir)) {
+      mkdirSync(configDir, { recursive: true });
+    }
+    
+    const logsDir = resolve(configDir, 'logs');
+    if (!existsSync(logsDir)) {
+      mkdirSync(logsDir, { recursive: true });
+    }
+    
+    const fullConfig: GatewayConfig = { 'common-mcp': config };
+    writeFileSync(configPath, JSON.stringify(fullConfig, null, 2), 'utf-8');
+    console.error(`[common-mcp] Created default config at: ${configPath}`);
+  } catch (err) {
+    console.error(`[common-mcp] Warning: Could not create default config file: ${(err as Error).message}`);
   }
 }
 
@@ -73,7 +95,43 @@ function getDefaultConfig(): CommonMCPConfig {
         resetTimeout: 60000
       }
     },
-    downstreamServers: {},
+    downstreamServers: {
+      'time': {
+        command: 'python',
+        args: ['-m', 'mcp_server_time'],
+        timeout: 30000,
+        retryAttempts: 3,
+        env: {}
+      },
+      'fetch': {
+        command: 'uvx',
+        args: ['mcp-server-fetch'],
+        timeout: 30000,
+        retryAttempts: 3,
+        env: {}
+      },
+      'memory': {
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-memory'],
+        timeout: 30000,
+        retryAttempts: 3,
+        env: {}
+      },
+      'filesystem': {
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
+        timeout: 30000,
+        retryAttempts: 3,
+        env: {}
+      },
+      'sequential-thinking': {
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
+        timeout: 60000,
+        retryAttempts: 2,
+        env: {}
+      }
+    },
     logging: {
       level: 'INFO',
       format: 'json',

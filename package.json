@@ -14,7 +14,9 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "lint": "eslint src --ext .ts",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "node -e \"const os=require('os');const fs=require('fs');const path=require('path');const dir=path.join(os.homedir(),'.common-mcp');if(!fs.existsSync(dir)){fs.mkdirSync(dir,{recursive:true});console.log('Created config directory:',dir);}\"",
+    "setup": "node dist/index.js --help || echo 'Run common-mcp to start the gateway'"
   },
   "repository": {
     "type": "git",
