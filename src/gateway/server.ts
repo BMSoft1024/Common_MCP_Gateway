@@ -23,7 +23,8 @@ export class CommonMCPGateway {
   private timeoutWatchdog: TimeoutWatchdog;
   private logger = getLogger();
   private config: CommonMCPConfig;
-  private toolNameMap: Map<string, ToolMapping>;
+  private toolNameMap: Map<string, ToolMapping> = new Map();
+  private cachedTools: Tool[] = [];
 
   constructor(config: CommonMCPConfig) {
     this.config = config;
@@ -38,7 +39,9 @@ export class CommonMCPGateway {
       },
       {
         capabilities: {
-          tools: {}
+          tools: {
+            listChanged: true
+          }
         }
       }
     );
@@ -50,79 +53,8 @@ export class CommonMCPGateway {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       this.logger.info('Handling list_tools request');
 
-      try {
-        this.toolNameMap.clear();
-        const allTools: Tool[] = [];
-        
-        // Create all connections in parallel for faster startup
-        // CRITICAL: Filter out disabled servers!
-        const connectionPromises = Object.entries(this.config.downstreamServers)
-          .filter(([_, serverConfig]) => !serverConfig.disabled)
-          .map(
-          async ([serverId, serverConfig]) => {
-            try {
-              const circuitBreakerConfig = {
-                ...this.config.globalDefaults.circuitBreaker,
-                failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
-              };
-              const connection = await this.connectionPool.createConnection(
-                serverId,
-                serverConfig,
-                circuitBreakerConfig
-              );
-
-              const result = await connection.client.request(
-                { method: 'tools/list' },
-                ListToolsResultSchema
-              );
-
-              if (result.tools) {
-                return result.tools.map((tool) => {
-                  const prefixedName = this.createToolName(serverId, tool.name);
-                  this.toolNameMap.set(prefixedName, {
-                    serverId,
-                    toolName: tool.name
-                  });
-
-                  // Enhanced description for better model understanding
-                  const baseDescription = tool.description || tool.name;
-                  const enhancedDescription = `[Server: ${serverId}] ${baseDescription}. Use this tool by calling ${prefixedName}.`;
-
-                  return {
-                    ...tool,
-                    name: prefixedName,
-                    description: enhancedDescription
-                  };
-                });
-              }
-              return [];
-            } catch (error) {
-              this.logger.error({
-                message: 'Failed to list tools from downstream',
-                serverId,
-                error: (error as Error).message
-              });
-              return [];
-            }
-          }
-        );
-
-        const results = await Promise.all(connectionPromises);
-        results.forEach(tools => allTools.push(...tools));
-
-        this.logger.info({
-          message: 'Tools listed successfully',
-          totalTools: allTools.length
-        });
-
-        return { tools: allTools };
-      } catch (error) {
-        this.logger.error({
-          message: 'Error listing tools',
-          error: (error as Error).message
-        });
-        throw error;
-      }
+      await this.refreshToolCache();
+      return { tools: this.cachedTools };
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -366,6 +298,109 @@ export class CommonMCPGateway {
       message: 'Common MCP Gateway started successfully',
       downstreamServers: Object.keys(this.config.downstreamServers)
     });
+
+    try {
+      await this.refreshToolCache(true);
+      this.logger.info('Tools cache initialized successfully');
+    } catch (error) {
+      this.logger.warn({
+        message: 'Failed to initialize tools cache',
+        error: (error as Error).message
+      });
+    }
+  }
+
+  private async refreshToolCache(shouldNotify = false): Promise<void> {
+    try {
+      this.logger.info('Refreshing tool cache from downstream servers');
+
+      this.toolNameMap.clear();
+      const allTools: Tool[] = [];
+
+      const connectionPromises = Object.entries(this.config.downstreamServers)
+        .filter(([_, serverConfig]) => !serverConfig.disabled)
+        .map(async ([serverId, serverConfig]) => {
+          try {
+            const circuitBreakerConfig = {
+              ...this.config.globalDefaults.circuitBreaker,
+              failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
+            };
+            const connection = await this.connectionPool.createConnection(
+              serverId,
+              serverConfig,
+              circuitBreakerConfig
+            );
+
+            const result = await connection.client.request(
+              { method: 'tools/list' },
+              ListToolsResultSchema
+            );
+
+            if (result.tools) {
+              return result.tools.map((tool) => {
+                const prefixedName = this.createToolName(serverId, tool.name);
+                this.toolNameMap.set(prefixedName, {
+                  serverId,
+                  toolName: tool.name
+                });
+
+                const baseDescription = tool.description || tool.name;
+                const enhancedDescription = `[Server: ${serverId}] ${baseDescription}. Use this tool by calling ${prefixedName}.`;
+
+                return {
+                  ...tool,
+                  name: prefixedName,
+                  description: enhancedDescription
+                };
+              });
+            }
+            return [];
+          } catch (error) {
+            this.logger.error({
+              message: 'Failed to list tools from downstream',
+              serverId,
+              error: (error as Error).message
+            });
+            return [];
+          }
+        });
+
+      const results = await Promise.all(connectionPromises);
+      results.forEach(tools => allTools.push(...tools));
+
+      this.cachedTools = allTools;
+
+      this.logger.info({
+        message: 'Tools cache refreshed',
+        totalTools: allTools.length
+      });
+
+      if (shouldNotify) {
+        await this.sendToolListChangedNotification();
+      }
+    } catch (error) {
+      this.logger.error({
+        message: 'Error refreshing tool cache',
+        error: (error as Error).message
+      });
+      throw error;
+    }
+  }
+
+  private async sendToolListChangedNotification(): Promise<void> {
+    if (typeof (this.server as any).sendToolListChanged !== 'function') {
+      return;
+    }
+
+    try {
+      await (this.server as any).sendToolListChanged();
+      this.logger.info('tools/list_changed notification sent');
+    } catch (error) {
+      this.logger.warn({
+        message: 'Failed to send tools/list_changed notification',
+        error: (error as Error).message
+      });
+    }
   }
 
   async stop(): Promise<void> {
