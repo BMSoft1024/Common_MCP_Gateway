@@ -432,9 +432,21 @@ Contributions are welcome! Please:
 
 See [CHANGELOG.md](./CHANGELOG.md) for detailed version history and release notes.
 
-## License
+## 📄 License
 
-Apache License 2.0 - See [LICENSE](./LICENSE) file for details.
+This project is **dual-licensed**:
+
+![AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)
+![Commercial](https://img.shields.io/badge/license-Commercial-green.svg)
+
+| Use case | License | Cost |
+|---|---|---|
+| Open-source projects | [AGPL v3](LICENSE-AGPL) | Free ✅ |
+| Commercial / closed-source | [Commercial License](LICENSE-COMMERCIAL) | Paid 💼 |
+
+> ⚠️ If you use this software in a **commercial or closed-source product**,
+> you must purchase a commercial license.
+> Contact: [support@bmsoft1024.com](mailto:support@bmsoft1024.com)
 
 ## Links
 
@@ -451,6 +463,10 @@ Apache License 2.0 - See [LICENSE](./LICENSE) file for details.
 For issues and questions:
 - GitHub Issues: [Create an issue](https://github.com/BMSoft1024/Common_MCP_Gateway/issues)
 - Documentation: [docs/EN/](./docs/EN/) and [docs/HU/](./docs/HU/)
+
+## Author
+
+**BMSoft1024** — [github.com/BMSoft1024](https://github.com/BMSoft1024)
 
 ---
 
