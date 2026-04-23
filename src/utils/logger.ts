@@ -10,14 +10,8 @@ export function initLogger(config: LoggingConfig): winston.Logger {
   
   const transports: winston.transport[] = [
     new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.timestamp(),
-        winston.format.printf(({ timestamp, level, message, ...meta }) => {
-          const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : '';
-          return `${timestamp} ${level}: ${message} ${metaStr}`;
-        })
-      )
+      // Only log to console if not in STDIO mode (to avoid interfering with MCP protocol)
+      silent: true
     })
   ];
 

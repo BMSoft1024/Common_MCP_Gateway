@@ -40,7 +40,7 @@ export class ConnectionPool {
             throw new Error('Client is null');
           }
           
-          this.logger.warn(`Connection already exists for ${serverId}, returning existing`);
+          this.logger.debug(`Connection already exists for ${serverId}, returning existing`);
           return existingConnection;
         } catch (error) {
           // Connection is stale, close and recreate
