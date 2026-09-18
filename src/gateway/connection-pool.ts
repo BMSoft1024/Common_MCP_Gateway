@@ -1,6 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { spawn, ChildProcess } from 'child_process';
 import { getLogger } from '../utils/logger';
 import { DownstreamServerConfig } from '../types/config';
 import { CircuitBreaker } from '../middleware/circuit-breaker';
@@ -8,7 +7,7 @@ import { RetryEngine } from '../middleware/retry';
 
 export interface DownstreamConnection {
   client: Client;
-  process: ChildProcess;
+  transport: StdioClientTransport;
   serverId: string;
   circuitBreaker: CircuitBreaker;
   retryEngine: RetryEngine;
@@ -34,12 +33,10 @@ export class ConnectionPool {
       // Check if connection is still alive
       if (existingConnection.isConnected) {
         try {
-          // Test connection health by checking if client is still connected
-          // If the connection is broken, this will throw an error
-          if (!existingConnection.client) {
-            throw new Error('Client is null');
-          }
-          
+          // Actually probe the downstream server instead of trusting the cached flag,
+          // since the child process can die without isConnected ever flipping to false.
+          await existingConnection.client.ping();
+
           this.logger.debug(`Connection already exists for ${serverId}, returning existing`);
           return existingConnection;
         } catch (error) {
@@ -87,7 +84,7 @@ export class ConnectionPool {
 
       const connection: DownstreamConnection = {
         client,
-        process: null as any,
+        transport,
         serverId,
         circuitBreaker: new CircuitBreaker(serverId, circuitBreakerConfig),
         retryEngine: new RetryEngine(),

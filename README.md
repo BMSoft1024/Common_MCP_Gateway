@@ -199,7 +199,7 @@ cursor-playwright__playwright_navigate
 }
 ```
 
-## Marketplace UI (Admin Interface)
+## Gateway Manager UI (Admin Interface)
 
 ### Web-based Configuration Editor
 
@@ -214,17 +214,17 @@ The Common MCP Gateway includes a web-based admin interface for managing your MC
 - Live WebSocket updates (no restart required)
 - Timeout, retry, circuit breaker, and fallback configuration
 
-### Running the Marketplace UI
+### Running the Gateway Manager UI
 
 **Option 1: Manual Start (Development)**
 
 ```bash
 # Terminal 1: Start backend
-cd marketplace/backend
+cd gateway-manager/backend
 npm run dev
 
 # Terminal 2: Start frontend
-cd marketplace/frontend
+cd gateway-manager/frontend
 npm run dev
 ```
 
@@ -245,8 +245,8 @@ pm2 start ecosystem.config.js
 pm2 status
 
 # View logs
-pm2 logs mcp-marketplace-backend
-pm2 logs mcp-marketplace-frontend
+pm2 logs gateway-manager-backend
+pm2 logs gateway-manager-frontend
 
 # Stop all
 pm2 stop all
@@ -257,7 +257,7 @@ pm2 save
 ```
 
 **Configuration Path:**
-- The Marketplace UI edits: `C:\Users\[username]\.common-mcp\config.json`
+- The Gateway Manager UI edits: `C:\Users\[username]\.common-mcp\config.json`
 - **NOT** the Windsurf config: `C:\Users\[username]\.codeium\windsurf\mcp_config.json`
 - Changes are saved immediately and broadcast via WebSocket
 
@@ -367,40 +367,7 @@ type C:\Users\%USERNAME%\.common-mcp\logs\common-mcp-*.log
 
 You can extend the gateway with custom middleware. See [ARCHITECTURE.md](./ARCHITECTURE.md) for details.
 
-## MCP Marketplace UI
-
-A web-based configuration management interface is available for easy MCP server management.
-
-### Features
-- **Visual Config Management**: View, add, edit, and delete MCP servers
-- **Enable/Disable Toggle**: Quick on/off switching for any server
-- **Live Reload**: Real-time updates via WebSocket
-- **Configuration Validation**: Automatic validation before saving
-- **Dark Mode UI**: Modern, clean interface
-
-### Quick Start
-
-**Start Backend:**
-```bash
-cd marketplace/backend
-npm install
-npm run dev
-```
-
-**Start Frontend:**
-```bash
-cd marketplace/frontend
-npm install
-npm run dev
-```
-
-Access at `http://localhost:5173`
-
-See [marketplace/README.md](./marketplace/README.md) for detailed documentation.
-
 ## Testing
-
-Comprehensive testing results available in [MCP_TOOLS_TEST_RESULTS.md](./MCP_TOOLS_TEST_RESULTS.md).
 
 **Tested MCP Servers:**
 - ✅ Time MCP (2 tools)
@@ -414,7 +381,7 @@ Comprehensive testing results available in [MCP_TOOLS_TEST_RESULTS.md](./MCP_TOO
 
 ## Examples
 
-See the [marketplace](./marketplace) directory for:
+See the [gateway-manager](./gateway-manager) directory for:
 - Backend API server example
 - React frontend implementation
 - WebSocket live reload pattern
@@ -425,12 +392,8 @@ See the [marketplace](./marketplace) directory for:
 Contributions are welcome! Please:
 1. Fork the repository
 2. Create a feature branch
-3. Test thoroughly (see TESTING.md)
+3. Test thoroughly
 4. Submit a pull request
-
-## Version History
-
-See [CHANGELOG.md](./CHANGELOG.md) for detailed version history and release notes.
 
 ## 📄 License
 
@@ -455,8 +418,7 @@ This project is **dual-licensed**:
 - [Windsurf IDE](https://codeium.com/windsurf)
 - [Cursor AI IDE](https://cursor.sh/)
 - [Architecture Documentation](./docs/EN/ARCHITECTURE.md)
-- [Testing Documentation](./docs/EN/TESTING.md)
-- [Test Results](./docs/EN/MCP_TOOLS_TEST_RESULTS.md)
+- [Gateway Manager Documentation](./docs/EN/GATEWAY_MANAGER.md)
 
 ## Support
 

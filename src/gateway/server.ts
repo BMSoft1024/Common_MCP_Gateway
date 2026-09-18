@@ -95,7 +95,7 @@ export class CommonMCPGateway {
         );
 
         const timeout = serverConfig.timeout || this.config.globalDefaults.timeout;
-        const retryAttempts = serverConfig.retryAttempts || serverConfig.retries || this.config.globalDefaults.retryAttempts;
+        const retryAttempts = serverConfig.retryAttempts ?? this.config.globalDefaults.retryAttempts;
 
         const result = await connection.circuitBreaker.execute(async () => {
           return await connection.retryEngine.executeWithRetry(
@@ -221,7 +221,7 @@ export class CommonMCPGateway {
     );
 
     const timeout = serverConfig.timeout || this.config.globalDefaults.timeout;
-    const retryAttempts = serverConfig.retryAttempts || serverConfig.retries || this.config.globalDefaults.retryAttempts;
+    const retryAttempts = serverConfig.retryAttempts ?? this.config.globalDefaults.retryAttempts;
 
     return await connection.circuitBreaker.execute(async () => {
       return await connection.retryEngine.executeWithRetry(
@@ -280,7 +280,13 @@ export class CommonMCPGateway {
       return [mapping.serverId, mapping.toolName];
     }
 
-    const [serverCandidate, toolCandidate] = fullName.split('__');
+    const separatorIndex = fullName.indexOf('__');
+    if (separatorIndex === -1) {
+      return [null, null];
+    }
+
+    const serverCandidate = fullName.slice(0, separatorIndex);
+    const toolCandidate = fullName.slice(separatorIndex + 2);
     if (!serverCandidate || !toolCandidate) {
       return [null, null];
     }

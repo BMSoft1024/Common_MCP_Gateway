@@ -15,7 +15,6 @@ export interface DownstreamServerConfig {
   args: string[];
   timeout?: number;
   retryAttempts?: number;
-  retries?: number;
   env?: Record<string, string>;
   healthCheck?: HealthCheckConfig;
   disabled?: boolean;
