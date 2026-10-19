@@ -1,21 +1,45 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  CallToolResultSchema,
-  ListToolsRequestSchema,
-  ListToolsResultSchema,
-  Tool
-} from '@modelcontextprotocol/sdk/types.js';
+import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { getLogger } from '../utils/logger';
 import { CommonMCPConfig } from '../types/config';
 import { ConnectionPool } from './connection-pool';
 import { TimeoutWatchdog, generateRequestId } from '../middleware/timeout';
+import {
+  ProjectContext,
+  loadConfig,
+  resolveProjectContext,
+  buildProjectContext,
+  findKnownProject,
+  loadProjectPolicy,
+  isServerAllowed
+} from '../utils/config';
+import { PolicyWatcher } from '../utils/policy-watcher';
+import { ToolExecutor } from './tool-executor';
+import { ToolList } from './tool-list';
+import { resolve as resolvePath } from 'path';
+import { homedir } from 'os';
 
-interface ToolMapping {
-  serverId: string;
-  toolName: string;
-}
+const SET_CONTEXT_TOOL_NAME = 'gate__set_project_context';
+
+const SET_CONTEXT_TOOL: Tool = {
+  name: SET_CONTEXT_TOOL_NAME,
+  description:
+    'Declare which registered project this session is working on. Provide the absolute ' +
+    'project root path. The gateway loads that project\'s policy and reloads the allowed ' +
+    'tool list. Always callable, even before a project context is declared.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      projectPath: {
+        type: 'string',
+        description: 'Absolute path to the project root directory'
+      }
+    },
+    required: ['projectPath']
+  }
+};
 
 export class CommonMCPGateway {
   private server: Server;
@@ -23,14 +47,49 @@ export class CommonMCPGateway {
   private timeoutWatchdog: TimeoutWatchdog;
   private logger = getLogger();
   private config: CommonMCPConfig;
-  private toolNameMap: Map<string, ToolMapping> = new Map();
-  private cachedTools: Tool[] = [];
+  private toolList: ToolList;
+  private executor: ToolExecutor;
+  private context: ProjectContext;
+  private sessionIdentified = false;
+  private policyWatcher: PolicyWatcher;
+  private configPath: string;
 
-  constructor(config: CommonMCPConfig) {
+  private sharedPool: boolean;
+  private origin?: { cwd?: string; projectPath?: string };
+
+  /**
+   * In daemon mode many sessions (one per client) run as separate gateway instances on ONE shared
+   * ConnectionPool, so every downstream server exists once no matter how many clients are connected.
+   * `origin` carries the connecting client's cwd and project path, which the daemon cannot see itself.
+   */
+  constructor(config: CommonMCPConfig, configPath?: string, options?: { pool?: ConnectionPool; cwd?: string; projectPath?: string }) {
     this.config = config;
-    this.connectionPool = new ConnectionPool();
+    this.sharedPool = options?.pool !== undefined;
+    this.origin = { cwd: options?.cwd, projectPath: options?.projectPath };
+    this.connectionPool = options?.pool ?? new ConnectionPool();
     this.timeoutWatchdog = new TimeoutWatchdog();
-    this.toolNameMap = new Map();
+    this.context = resolveProjectContext(config, { cwd: options?.cwd, projectPath: options?.projectPath });
+    this.sessionIdentified = this.context.matched === 'project';
+    this.configPath =
+      configPath ||
+      process.env.COMMON_MCP_CONFIG ||
+      resolvePath(homedir(), '.common-mcp', 'config.json');
+
+    const deps = {
+      pool: this.connectionPool,
+      getConfig: () => this.config,
+      getPolicy: () => this.context.policy
+    };
+    this.toolList = new ToolList(deps);
+    this.executor = new ToolExecutor({ ...deps, watchdog: this.timeoutWatchdog });
+
+    if (!this.sharedPool) {
+      this.connectionPool.setServerEnabledFilter((serverId) =>
+        isServerAllowed(this.context.policy, serverId,
+          this.config.downstreamServers[serverId]?.projectOnly === true)
+      );
+    }
+    this.policyWatcher = new PolicyWatcher(() => this.onPolicyFileChanged());
 
     this.server = new Server(
       {
@@ -54,7 +113,14 @@ export class CommonMCPGateway {
       this.logger.info('Handling list_tools request');
 
       await this.refreshToolCache();
-      return { tools: this.cachedTools };
+
+      if (this.requiresContextDeclaration()) {
+        const alwaysVisible = this.config.gate?.unknownProjectDefaults?.alwaysVisibleTools ?? [];
+        const extras = this.toolList.tools.filter((t) => alwaysVisible.includes(t.name));
+        return { tools: [SET_CONTEXT_TOOL, ...extras] };
+      }
+
+      return { tools: [SET_CONTEXT_TOOL, ...this.toolList.tools] };
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -68,242 +134,151 @@ export class CommonMCPGateway {
         arguments: args
       });
 
-      const [serverId, toolName] = this.parseToolName(name);
-      
+      if (name === SET_CONTEXT_TOOL_NAME) {
+        return await this.handleSetProjectContext(args);
+      }
+
+      if (this.requiresContextDeclaration()) {
+        throw new Error(
+          `Project context not declared. Call ${SET_CONTEXT_TOOL_NAME} with the project root path first.`
+        );
+      }
+
+      const [serverId, toolName] = this.toolList.parseToolName(name);
+
       if (!serverId || !toolName) {
         throw new Error(`Invalid tool name format: ${name}. Expected: serverId__toolName (double underscore separator)`);
       }
 
-      const serverConfig = this.config.downstreamServers[serverId];
-      if (!serverConfig) {
-        throw new Error(`Unknown downstream server: ${serverId}`);
-      }
+      return await this.executor.call(serverId, toolName, args, requestId, name);
+    });
+  }
 
-      if (serverConfig.disabled) {
-        throw new Error(`Server "${serverId}" is disabled and cannot be called`);
-      }
+  private getClientName(): string {
+    try {
+      const version = (this.server as any).getClientVersion?.();
+      return version?.name ?? '';
+    } catch {
+      return '';
+    }
+  }
 
-      try {
-        const circuitBreakerConfig = {
-          ...this.config.globalDefaults.circuitBreaker,
-          failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
-        };
-        const connection = await this.connectionPool.createConnection(
-          serverId,
-          serverConfig,
-          circuitBreakerConfig
-        );
+  private requiresContextDeclaration(): boolean {
+    // Opt-in (gate.requireContextDeclaration): by default every client lists all tools.
+    if (this.config.gate?.requireContextDeclaration !== true) {
+      return false;
+    }
+    if (this.sessionIdentified || this.context.matched === 'project') {
+      return false;
+    }
+    const clientName = this.getClientName();
+    // Forced context mode applies only to Claude Desktop (no per-project MCP
+    // config, unusable cwd). CLI clients fall through to unknown defaults.
+    return /claude/i.test(clientName) && !/code/i.test(clientName);
+  }
 
-        const timeout = serverConfig.timeout || this.config.globalDefaults.timeout;
-        const retryAttempts = serverConfig.retryAttempts ?? this.config.globalDefaults.retryAttempts;
+  private async handleSetProjectContext(args: any): Promise<any> {
+    const projectPath = args?.projectPath;
+    if (typeof projectPath !== 'string' || projectPath.trim().length === 0) {
+      return {
+        content: [{ type: 'text', text: 'Error: "projectPath" (string) argument is required' }],
+        isError: true
+      };
+    }
 
-        const result = await connection.circuitBreaker.execute(async () => {
-          return await connection.retryEngine.executeWithRetry(
-            async () => {
-              return await new Promise<any>((resolve, reject) => {
-                this.timeoutWatchdog.start(requestId, timeout, () => {
-                  reject(new Error(`Request timed out after ${timeout}ms`));
-                });
-
-                connection.client.request(
-                  { 
-                    method: 'tools/call',
-                    params: {
-                      name: toolName,
-                      arguments: args
-                    }
-                  } as any,
-                  CallToolResultSchema
-                )
-                .then((result: any) => {
-                  this.timeoutWatchdog.cancel(requestId);
-                  resolve(result);
-                })
-                .catch((error: any) => {
-                  this.timeoutWatchdog.cancel(requestId);
-                  reject(error);
-                });
-              });
-            },
-            {
-              maxAttempts: retryAttempts,
-              baseDelay: this.config.globalDefaults.retryDelay
-            },
-            {
-              requestId,
-              serverId,
-              tool: toolName
-            }
-          );
-        });
-
-        this.logger.info({
-          message: 'Tool call successful',
-          requestId,
-          serverId,
-          toolName
-        });
-
-        return result as any;
-      } catch (error) {
-        this.logger.error({
-          message: 'Tool call failed',
-          requestId,
-          serverId,
-          toolName,
-          error: (error as Error).message
-        });
-
-        // Try fallback servers if configured
-        const serverConfig = this.config.downstreamServers[serverId];
-        if (serverConfig.fallbackServers && serverConfig.fallbackServers.length > 0) {
-          this.logger.warn({
-            message: 'Attempting fallback servers',
-            requestId,
-            serverId,
-            fallbackServers: serverConfig.fallbackServers
-          });
-
-          for (const fallbackServerId of serverConfig.fallbackServers) {
-            try {
-              const fallbackResult = await this.executeToolCall(
-                fallbackServerId,
-                toolName,
-                args,
-                requestId
-              );
-              
-              this.logger.info({
-                message: 'Fallback server successful',
-                requestId,
-                primaryServer: serverId,
-                fallbackServer: fallbackServerId,
-                toolName
-              });
-              
-              return fallbackResult;
-            } catch (fallbackError) {
-              this.logger.warn({
-                message: 'Fallback server failed',
-                requestId,
-                primaryServer: serverId,
-                fallbackServer: fallbackServerId,
-                toolName,
-                error: (fallbackError as Error).message
-              });
-            }
+    const found = findKnownProject(this.config.gate?.knownProjects, projectPath);
+    if (!found) {
+      this.logger.warn({
+        message: 'set_project_context: path not in knownProjects registry',
+        projectPath
+      });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Path "${projectPath}" is not a registered project (or inside one). Unknown-project policy remains active.`
           }
-        }
-
-        throw error;
-      }
-    });
-  }
-
-  private async executeToolCall(serverId: string, toolName: string, args: any, requestId: string): Promise<any> {
-    const serverConfig = this.config.downstreamServers[serverId];
-    if (!serverConfig) {
-      throw new Error(`Unknown downstream server: ${serverId}`);
+        ],
+        isError: true
+      };
     }
 
-    if (serverConfig.disabled) {
-      throw new Error(`Server "${serverId}" is disabled and cannot be called`);
-    }
+    this.context = buildProjectContext(this.config, found.id, found.path);
+    this.sessionIdentified = true;
+    this.startPolicyWatcher();
+    await this.refreshToolCache(true);
 
-    const circuitBreakerConfig = {
-      ...this.config.globalDefaults.circuitBreaker,
-      failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
+    const result = {
+      projectId: found.id,
+      projectPath: found.path,
+      matchedPolicy: 'project',
+      enabledToolCount: this.toolList.tools.length
     };
-    const connection = await this.connectionPool.createConnection(
-      serverId,
-      serverConfig,
-      circuitBreakerConfig
-    );
 
-    const timeout = serverConfig.timeout || this.config.globalDefaults.timeout;
-    const retryAttempts = serverConfig.retryAttempts ?? this.config.globalDefaults.retryAttempts;
+    this.logger.info({
+      message: 'Project context set via meta-tool',
+      projectId: found.id,
+      projectPath: found.path,
+      enabledToolCount: this.toolList.tools.length
+    });
 
-    return await connection.circuitBreaker.execute(async () => {
-      return await connection.retryEngine.executeWithRetry(
-        async () => {
-          return await new Promise<any>((resolve, reject) => {
-            this.timeoutWatchdog.start(requestId, timeout, () => {
-              reject(new Error(`Request timed out after ${timeout}ms`));
-            });
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+    };
+  }
 
-            connection.client.request(
-              { 
-                method: 'tools/call',
-                params: {
-                  name: toolName,
-                  arguments: args
-                }
-              } as any,
-              CallToolResultSchema
-            )
-            .then((result: any) => {
-              this.timeoutWatchdog.cancel(requestId);
-              resolve(result);
-            })
-            .catch((error: any) => {
-              this.timeoutWatchdog.cancel(requestId);
-              reject(error);
-            });
-          });
-        },
-        {
-          maxAttempts: retryAttempts,
-          baseDelay: this.config.globalDefaults.retryDelay
-        },
-        {
-          requestId,
-          serverId,
-          tool: toolName
+  private onPolicyFileChanged(): void {
+    this.logger.info('Policy or gate config file changed, reloading');
+    try {
+      this.config = loadConfig(this.configPath);
+    } catch (error) {
+      this.logger.warn({
+        message: 'Failed to reload gateway config, keeping previous configuration',
+        error: (error as Error).message
+      });
+    }
+    if (this.context.matched === 'project' && this.context.policyPath && this.context.projectId) {
+      this.context.policy = loadProjectPolicy(this.context.policyPath, this.context.projectId);
+    } else {
+      const reloaded = resolveProjectContext(this.config, this.origin);
+      this.context = reloaded;
+      this.sessionIdentified = reloaded.matched === 'project';
+    }
+    // A shared pool serves other sessions whose policy may still allow the server, so only the idle timer closes it.
+    if (!this.sharedPool) {
+      for (const serverId of this.connectionPool.getAllServerIds()) {
+        const serverConfig = this.config.downstreamServers[serverId];
+        if (!serverConfig || serverConfig.disabled || !isServerAllowed(this.context.policy, serverId, serverConfig.projectOnly === true)) {
+          this.connectionPool.closeConnection(serverId).catch(() => undefined);
         }
-      );
+      }
+    }
+    this.refreshToolCache(true).catch((error) => {
+      this.logger.warn({
+        message: 'Tool cache refresh failed after policy change',
+        error: (error as Error).message
+      });
     });
   }
 
-  private createToolName(serverId: string, toolName: string): string {
-    const safeServer = serverId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const safeTool = toolName.replace(/[^a-zA-Z0-9_-]/g, '_');
-    let combined = `${safeServer}__${safeTool}`;
-    if (combined.length > 64) {
-      combined = combined.slice(0, 64);
-    }
-    return combined;
+  private startPolicyWatcher(): void {
+    this.policyWatcher.watchPaths(this.context.policyPath, this.configPath);
   }
 
-  private parseToolName(fullName: string): [string | null, string | null] {
-    const mapping = this.toolNameMap.get(fullName);
-    if (mapping) {
-      return [mapping.serverId, mapping.toolName];
-    }
-
-    const separatorIndex = fullName.indexOf('__');
-    if (separatorIndex === -1) {
-      return [null, null];
-    }
-
-    const serverCandidate = fullName.slice(0, separatorIndex);
-    const toolCandidate = fullName.slice(separatorIndex + 2);
-    if (!serverCandidate || !toolCandidate) {
-      return [null, null];
-    }
-
-    return [serverCandidate, toolCandidate];
-  }
-
-  async start(): Promise<void> {
+  async start(transport?: Transport): Promise<void> {
     this.logger.info('Starting Common MCP Gateway');
 
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
+    await this.server.connect(transport ?? new StdioServerTransport());
 
     this.logger.info({
       message: 'Common MCP Gateway started successfully',
-      downstreamServers: Object.keys(this.config.downstreamServers)
+      downstreamServers: Object.keys(this.config.downstreamServers),
+      projectContext: this.context.matched,
+      projectId: this.context.projectId,
+      policyPath: this.context.policyPath
     });
+
+    this.startPolicyWatcher();
 
     try {
       await this.refreshToolCache(true);
@@ -317,79 +292,10 @@ export class CommonMCPGateway {
   }
 
   private async refreshToolCache(shouldNotify = false): Promise<void> {
-    try {
-      this.logger.info('Refreshing tool cache from downstream servers');
+    await this.toolList.refresh();
 
-      this.toolNameMap.clear();
-      const allTools: Tool[] = [];
-
-      const connectionPromises = Object.entries(this.config.downstreamServers)
-        .filter(([_, serverConfig]) => !serverConfig.disabled)
-        .map(async ([serverId, serverConfig]) => {
-          try {
-            const circuitBreakerConfig = {
-              ...this.config.globalDefaults.circuitBreaker,
-              failureThreshold: serverConfig.circuitBreakerThreshold || this.config.globalDefaults.circuitBreaker.failureThreshold
-            };
-            const connection = await this.connectionPool.createConnection(
-              serverId,
-              serverConfig,
-              circuitBreakerConfig
-            );
-
-            const result = await connection.client.request(
-              { method: 'tools/list' },
-              ListToolsResultSchema
-            );
-
-            if (result.tools) {
-              return result.tools.map((tool) => {
-                const prefixedName = this.createToolName(serverId, tool.name);
-                this.toolNameMap.set(prefixedName, {
-                  serverId,
-                  toolName: tool.name
-                });
-
-                const baseDescription = tool.description || tool.name;
-                const enhancedDescription = `[Server: ${serverId}] ${baseDescription}. Use this tool by calling ${prefixedName}.`;
-
-                return {
-                  ...tool,
-                  name: prefixedName,
-                  description: enhancedDescription
-                };
-              });
-            }
-            return [];
-          } catch (error) {
-            this.logger.error({
-              message: 'Failed to list tools from downstream',
-              serverId,
-              error: (error as Error).message
-            });
-            return [];
-          }
-        });
-
-      const results = await Promise.all(connectionPromises);
-      results.forEach(tools => allTools.push(...tools));
-
-      this.cachedTools = allTools;
-
-      this.logger.info({
-        message: 'Tools cache refreshed',
-        totalTools: allTools.length
-      });
-
-      if (shouldNotify) {
-        await this.sendToolListChangedNotification();
-      }
-    } catch (error) {
-      this.logger.error({
-        message: 'Error refreshing tool cache',
-        error: (error as Error).message
-      });
-      throw error;
+    if (shouldNotify) {
+      await this.sendToolListChangedNotification();
     }
   }
 
@@ -409,11 +315,19 @@ export class CommonMCPGateway {
     }
   }
 
+  /** Synchronous downstream process-tree kill for the process 'exit' handler. */
+  killDownstreamSync(): void {
+    this.connectionPool.killAllSync();
+  }
+
   async stop(): Promise<void> {
     this.logger.info('Stopping Common MCP Gateway');
 
     this.timeoutWatchdog.cancelAll();
-    await this.connectionPool.closeAll();
+    this.policyWatcher.close();
+    if (!this.sharedPool)
+      await this.connectionPool.closeAll();
+
     await this.server.close();
 
     this.logger.info('Common MCP Gateway stopped');

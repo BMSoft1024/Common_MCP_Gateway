@@ -4,9 +4,9 @@
 
 The Common MCP Gateway includes a web-based admin interface for managing downstream MCP servers. This Gateway Manager allows you to easily add, modify, and delete MCP servers.
 
-## ⚠️ IMPORTANT: Restart Required
+## When changes take effect
 
-**After ANY configuration change (enable/disable, add, edit, delete), you MUST restart Windsurf IDE** for the changes to take effect. The Gateway loads configuration on startup and does not hot-reload.
+The gateway watches the config file and reloads it while running, so enabling, disabling, adding and removing servers apply without a restart. A changed command or arguments of an already connected server apply after that connection is closed (disable, then enable) or after a gateway restart. Some IDE clients (for example Windsurf) cache the tool list until they refresh it.
 
 ## Features
 
@@ -24,7 +24,7 @@ The Common MCP Gateway includes a web-based admin interface for managing downstr
 - **Fallback servers**: Specify alternative servers on failure
 - **Live updates**: WebSocket-based real-time synchronization
 - **Auto-save**: Changes are saved immediately
-- **No restart required**: Config changes apply instantly
+- **Live updates**: the UI refreshes instantly; the gateway reloads the config file shortly after it changes
 
 ## Installation and Startup
 
@@ -185,7 +185,7 @@ Changes are saved immediately and broadcast to all clients via WebSocket.
 
 ## WebSocket Live Updates
 
-The Marketplace UI uses WebSocket connection to the backend:
+The Gateway Manager UI uses WebSocket connection to the backend:
 - **Port:** 1525
 - **Event:** `configUpdate`
 - **Behavior:** Broadcasts to all clients after every config change
@@ -274,7 +274,7 @@ pm2 save
 
 ## Support
 
-If you have issues with the Marketplace UI:
+If you have issues with the Gateway Manager UI:
 1. Check this documentation
 2. View logs: `pm2 logs` or backend/frontend console
 3. Verify config file syntax

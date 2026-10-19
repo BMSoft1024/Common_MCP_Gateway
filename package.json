@@ -1,6 +1,6 @@
 {
   "name": "@bmsoft1024/common-mcp-gateway",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Common MCP Gateway - Aggregates multiple MCP servers with robust timeout and error handling",
   "main": "dist/index.js",
   "bin": {
@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:e2e": "node --test test/e2e.test.mjs",
     "test:coverage": "jest --coverage",
     "lint": "eslint src --ext .ts",
     "prepare": "npm run build",
@@ -40,7 +41,7 @@
     "circuit-breaker"
   ],
   "author": "BMSoft1024",
-  "license": "Apache-2.0",
+  "license": "(AGPL-3.0-only OR LicenseRef-LICENSE-COMMERCIAL)",
   "preferGlobal": true,
   "engines": {
     "node": ">=18.0.0"

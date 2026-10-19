@@ -3,12 +3,14 @@ const { spawn } = require('child_process');
 
 console.log('Testing Dart MCP Server...');
 
-const dartServer = spawn('G:/M_Programming/X_ENV_X/FLUTTER_SDK/flutter/bin/dart.bat', ['mcp-server'], {
+// DART_BIN and DART_SDK point to your Dart/Flutter installation, by default `dart` from PATH is used.
+const dartServer = spawn(process.env.DART_BIN || 'dart', ['mcp-server'], {
+  shell: process.platform === 'win32',
   cwd: process.cwd(),
   stdio: ['pipe', 'pipe', 'pipe'],
   env: {
     ...process.env,
-    DART_SDK: 'G:\\M_Programming\\X_ENV_X\\FLUTTER_SDK\\flutter\\bin\\cache\\dart-sdk'
+    ...(process.env.DART_SDK ? { DART_SDK: process.env.DART_SDK } : {})
   }
 });
 

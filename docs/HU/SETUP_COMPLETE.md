@@ -31,11 +31,11 @@
    - Lokáció: `%APPDATA%\npm\node_modules\@bmsoft1024\common-mcp-gateway`
 
 4. **Konfiguráció** ✅
-   - `C:\Users\mikuc\.common-mcp\config.json` - Downstream szerverek
-   - `C:\Users\mikuc\.common-mcp\logs\` - Log könyvtár
+   - `C:\Users\<user>\.common-mcp\config.json` - Downstream szerverek
+   - `C:\Users\<user>\.common-mcp\logs\` - Log könyvtár
 
 5. **Windsurf Integráció** ✅
-   - `c:\Users\mikuc\.codeium\windsurf\mcp_config.json` frissítve
+   - `c:\Users\<user>\.codeium\windsurf\mcp_config.json` frissítve
    - Common MCP Gateway hozzáadva és engedélyezve
    - Downstream MCP-k letiltva (gateway kezeli őket)
 
@@ -96,24 +96,24 @@ Elvárt kimenet:
 ```
 CommandType     Name            Version    Source
 -----------     ----            -------    ------
-Application     common-mcp.cmd  0.0.0.0    C:\Users\mikuc\AppData\Roaming\npm\common-mcp.cmd
+Application     common-mcp.cmd  0.0.0.0    C:\Users\<user>\AppData\Roaming\npm\common-mcp.cmd
 ```
 
 ### 2. Konfiguráció Helyesen Betöltődött?
 ```bash
-type C:\Users\mikuc\.common-mcp\config.json
+type C:\Users\<user>\.common-mcp\config.json
 ```
 
 ### 3. Windsurf MCP Config Frissült?
 ```bash
-type c:\Users\mikuc\.codeium\windsurf\mcp_config.json
+type c:\Users\<user>\.codeium\windsurf\mcp_config.json
 ```
 
 Keress rá a `"common-mcp-gateway"` bejegyzésre - ennek `disabled: false`-nak kell lennie.
 
 ### 4. Log Fájlok Generálódnak?
 ```bash
-dir C:\Users\mikuc\.common-mcp\logs\
+dir C:\Users\<user>\.common-mcp\logs\
 ```
 
 IDE újraindítás után automatikusan létrejön egy log fájl.
@@ -132,7 +132,7 @@ A Common MCP Gateway-n keresztül a tool-okat `serverId/toolName` formátumban h
 
 ## Konfiguráció Finomhangolása
 
-Ha szükséges, szerkeszd a `C:\Users\mikuc\.common-mcp\config.json` fájlt:
+Ha szükséges, szerkeszd a `C:\Users\<user>\.common-mcp\config.json` fájlt:
 
 ```json
 {
@@ -165,7 +165,7 @@ Ha bármilyen hiba merül fel:
 
 1. **Ellenőrizd a logokat:**
    ```bash
-   type C:\Users\mikuc\.common-mcp\logs\common-mcp-*.log
+   type C:\Users\<user>\.common-mcp\logs\common-mcp-*.log
    ```
 
 2. **Futtasd manuálisan teszteléshez:**

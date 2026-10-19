@@ -1,618 +1,219 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { io, Socket } from 'socket.io-client';
+import { io } from 'socket.io-client';
+import { api } from './api';
+import type { MCPConfig, MCPServer, ToolCatalogResponse } from './types';
+import { ServerForm } from './components/ServerForm';
+import { ServerCard } from './components/ServerCard';
+import { StatusBar } from './components/StatusBar';
+import { ToolCatalogPanel } from './components/ToolCatalogPanel';
+import { GatePanel } from './components/GatePanel';
+import { SettingsPanel } from './components/SettingsPanel';
 
-interface MCPServer {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  disabled?: boolean;
-  disabledTools?: string[];
-  timeout?: number;
-  retries?: number;
-  circuitBreakerThreshold?: number;
-  fallbackServers?: string[];
-}
+type Tab = 'servers' | 'tools' | 'gate' | 'settings';
 
-interface MCPConfig {
-  'common-mcp': {
-    version?: string;
-    globalDefaults?: {
-      timeout?: number;
-      retryAttempts?: number;
-      retryDelay?: number;
-      circuitBreaker?: {
-        enabled?: boolean;
-        failureThreshold?: number;
-        resetTimeout?: number;
-      };
-    };
-    downstreamServers: Record<string, MCPServer>;
-    logging?: {
-      level?: string;
-      format?: string;
-      file?: string;
-      maxSize?: string;
-      maxFiles?: number;
-    };
-  };
-}
-
-let socket: Socket | null = null;
+const NEW_SERVER: MCPServer = { command: '', args: [], env: {}, disabled: false, timeout: 30000, retryAttempts: 3, circuitBreakerThreshold: 5, fallbackServers: [] };
 
 function App() {
   const queryClient = useQueryClient();
-  const [editingServer, setEditingServer] = useState<string | null>(null);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [formData, setFormData] = useState<{ name: string; server: MCPServer }>({
-    name: '',
-    server: { 
-      command: '', 
-      args: [], 
-      env: {}, 
-      disabled: false,
-      timeout: 30000,
-      retries: 3,
-      circuitBreakerThreshold: 5,
-      fallbackServers: []
-    }
-  });
-  
-  // Raw JSON string for environment variables
-  const [envJsonString, setEnvJsonString] = useState<string>('{}');
-  const [envJsonError, setEnvJsonError] = useState<string>('');
+  const [tab, setTab] = useState<Tab>('servers');
+  const [editing, setEditing] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [configError, setConfigError] = useState('');
+  const [actionError, setActionError] = useState('');
 
-  const { data: config, isLoading } = useQuery<MCPConfig>({
-    queryKey: ['mcpConfig'],
-    queryFn: async () => {
-      const res = await fetch('/api/config');
-      return res.json();
-    }
-  });
+  const configQuery = useQuery<MCPConfig>({ queryKey: ['mcpConfig'], queryFn: api.getConfig });
+  const statusQuery = useQuery({ queryKey: ['status'], queryFn: api.getStatus, refetchInterval: 30000 });
+  const catalogQuery = useQuery<ToolCatalogResponse>({ queryKey: ['toolCatalog'], queryFn: api.getToolCatalog });
 
   useEffect(() => {
-    if (!socket) {
-      socket = io('http://localhost:1525');
-      
-      socket.on('connect', () => {
-        console.log('[WebSocket] Connected to backend');
-      });
-
-      socket.on('configUpdate', (newConfig: MCPConfig) => {
-        console.log('[WebSocket] Config updated');
-        queryClient.setQueryData(['mcpConfig'], newConfig);
-      });
-
-      socket.on('disconnect', () => {
-        console.log('[WebSocket] Disconnected');
-      });
-    }
-
+    const socket = io();
+    socket.on('connect', () => setSocketConnected(true));
+    socket.on('disconnect', () => setSocketConnected(false));
+    socket.on('configUpdate', (config: MCPConfig) => {
+      setConfigError('');
+      queryClient.setQueryData(['mcpConfig'], config);
+    });
+    socket.on('configError', (message: string) => setConfigError(message));
+    socket.on('catalogUpdate', () => {
+      queryClient.invalidateQueries({ queryKey: ['toolCatalog'] });
+      queryClient.invalidateQueries({ queryKey: ['status'] });
+    });
     return () => {
-      if (socket) {
-        socket.disconnect();
-        socket = null;
-      }
+      socket.disconnect();
     };
   }, [queryClient]);
 
-  const toggleMutation = useMutation({
-    mutationFn: async (serverId: string) => {
-      const res = await fetch(`/api/config/server/${serverId}/toggle`, {
-        method: 'PATCH'
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mcpConfig'] });
-    }
-  });
+  const onMutationError = (error: Error) => setActionError(error.message);
+  const onMutationDone = () => {
+    setActionError('');
+    queryClient.invalidateQueries({ queryKey: ['mcpConfig'] });
+  };
 
-  const deleteMutation = useMutation({
-    mutationFn: async (serverId: string) => {
-      const res = await fetch(`/api/config/server/${serverId}`, {
-        method: 'DELETE'
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mcpConfig'] });
-    }
-  });
-
+  const toggleMutation = useMutation({ mutationFn: api.toggleServer, onSuccess: onMutationDone, onError: onMutationError });
+  const deleteMutation = useMutation({ mutationFn: api.deleteServer, onSuccess: onMutationDone, onError: onMutationError });
   const saveMutation = useMutation({
-    mutationFn: async ({ name, server }: { name: string; server: MCPServer }) => {
-      const res = await fetch(`/api/config/server/${name}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(server)
-      });
-      return res.json();
-    },
+    mutationFn: ({ name, server }: { name: string; server: MCPServer }) => api.saveServer(name, server),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mcpConfig'] });
-      handleCancel();
+      onMutationDone();
+      setEditing(null);
+      setAdding(false);
     }
   });
 
-  const handleEdit = (serverId: string, server: MCPServer) => {
-    console.log('handleEdit called with:', { serverId, currentEditingServer: editingServer });
-    
-    if (editingServer === serverId) {
-      console.log('Closing edit for:', serverId);
-      setEditingServer(null);
-    } else {
-      console.log('Opening edit for:', serverId);
-      // Get the latest server data from the current config
-      const currentConfig = queryClient.getQueryData(['mcpConfig']) as any;
-      const latestServerData = currentConfig?.['common-mcp']?.downstreamServers?.[serverId] || server;
-      
-      console.log('Using latest server data:', latestServerData);
-      
-      // Use functional update to ensure proper state sequencing
-      setEditingServer(serverId);
-      setFormData({ name: serverId, server: { ...latestServerData } });
-      
-      // Initialize envJsonString with current env values
-      setEnvJsonString(JSON.stringify(latestServerData.env || {}, null, 2));
-      setEnvJsonError('');
-      
-      // Debug: check state after update
-      setTimeout(() => {
-        console.log('State after update - editingServer should be:', serverId);
-      }, 100);
+  const gatewayConfig = configQuery.data?.['common-mcp'];
+  const servers = gatewayConfig?.downstreamServers ?? {};
+  const serverNames = Object.keys(servers);
+
+  const toolCounts = useMemo(() => {
+    const counts: Record<string, { enabled: number; total: number }> = {};
+    for (const tool of catalogQuery.data?.catalog?.tools ?? []) {
+      const entry = (counts[tool.serverId] ??= { enabled: 0, total: 0 });
+      entry.total += 1;
+      if (tool.enabledByPolicy) entry.enabled += 1;
     }
+    return counts;
+  }, [catalogQuery.data]);
+
+  const startAdd = () => {
+    saveMutation.reset();
+    setEditing(null);
+    setAdding((open) => !open);
   };
 
-  const handleSave = () => {
-    if (formData.name && formData.server.command) {
-      console.log('=== SAVE DEBUG ===');
-      console.log('formData.server.env:', formData.server.env);
-      console.log('Full formData:', formData);
-      
-      saveMutation.mutate(formData);
-    }
+  const startEdit = (serverId: string) => {
+    saveMutation.reset();
+    setAdding(false);
+    setEditing((current) => (current === serverId ? null : serverId));
   };
 
-  const handleCancel = () => {
-    setEditingServer(null);
-    setShowAddForm(false);
-    setFormData({ 
-      name: '', 
-      server: { 
-        command: '', 
-        args: [], 
-        env: {}, 
-        disabled: false,
-        timeout: 30000,
-        retries: 3,
-        circuitBreakerThreshold: 5,
-        fallbackServers: []
-      } 
-    });
-    setEnvJsonString('{}');
-    setEnvJsonError('');
-  };
-
-  const handleAddNew = () => {
-    setShowAddForm(!showAddForm);
-    setEditingServer(null);
-    setFormData({ 
-      name: '', 
-      server: { 
-        command: '', 
-        args: [], 
-        env: {}, 
-        disabled: false,
-        timeout: 30000,
-        retries: 3,
-        circuitBreakerThreshold: 5,
-        fallbackServers: []
-      } 
-    });
-  };
-
-  if (isLoading) {
+  if (configQuery.isLoading) {
     return (
       <div className="min-h-screen bg-dark-bg flex items-center justify-center">
-        <div className="text-white text-xl">Loading MCP Configuration...</div>
+        <div className="text-white text-xl">Loading MCP configuration...</div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-dark-bg text-white p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold">Common MCP Gateway Manager</h1>
-          <button
-            onClick={handleAddNew}
-            className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold"
-          >
-            + Add New MCP
+  if (configQuery.isError) {
+    return (
+      <div className="min-h-screen bg-dark-bg text-white flex items-center justify-center p-8">
+        <div className="max-w-xl text-center space-y-4">
+          <h1 className="text-3xl font-bold">Cannot load the configuration</h1>
+          <p className="text-red-300">{(configQuery.error as Error).message}</p>
+          <button onClick={() => configQuery.refetch()} className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold">
+            Retry
           </button>
         </div>
+      </div>
+    );
+  }
 
-        {showAddForm && (
-          <div className="bg-dark-card p-6 rounded-lg border border-dark-border mb-6">
-            <h2 className="text-2xl font-bold mb-4">Add New MCP Server</h2>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">Server Name</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  disabled={!!editingServer}
-                  className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white disabled:opacity-50"
-                  placeholder="e.g., my-mcp-server"
-                />
-              </div>
+  const tabs: { id: Tab; label: string }[] = [
+    { id: 'servers', label: `Servers (${serverNames.length})` },
+    { id: 'tools', label: `Tool catalog${catalogQuery.data?.catalog ? ` (${catalogQuery.data.catalog.tools.length})` : ''}` },
+    { id: 'gate', label: `Gate${gatewayConfig?.gate ? ` (${Object.keys(gatewayConfig.gate.knownProjects ?? {}).length} projects)` : ''}` },
+    { id: 'settings', label: 'Settings' }
+  ];
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Command</label>
-                <input
-                  type="text"
-                  value={formData.server.command}
-                  onChange={(e) => setFormData({ 
-                    ...formData, 
-                    server: { ...formData.server, command: e.target.value }
-                  })}
-                  className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                  placeholder="e.g., npx"
-                />
-              </div>
+  return (
+    <div className="min-h-screen bg-dark-bg text-white p-4 sm:p-8">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
+          <h1 className="text-3xl sm:text-4xl font-bold">Common MCP Gateway Manager</h1>
+          {tab === 'servers' && (
+            <button onClick={startAdd} className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold">
+              {adding ? 'Close form' : '+ Add New MCP'}
+            </button>
+          )}
+        </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Arguments (comma-separated)</label>
-                <input
-                  type="text"
-                  value={formData.server.args?.join(', ') || ''}
-                  onChange={(e) => setFormData({ 
-                    ...formData, 
-                    server: { 
-                      ...formData.server, 
-                      args: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                    }
-                  })}
-                  className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                  placeholder="e.g., -y, @scope/package-name"
-                />
-              </div>
+        <StatusBar socketConnected={socketConnected} status={statusQuery.data} configError={configError} />
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Environment Variables (JSON)</label>
-                <textarea
-                  value={envJsonString}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setEnvJsonString(value);
-                    
-                    // Validate JSON without blocking state update
-                    try {
-                      const env = JSON.parse(value);
-                      setFormData({ 
-                        ...formData, 
-                        server: { ...formData.server, env }
-                      });
-                      setEnvJsonError('');
-                    } catch (err) {
-                      setEnvJsonError('Invalid JSON format');
-                    }
-                  }}
-                  className={`w-full bg-dark-bg border rounded px-4 py-2 text-white font-mono text-sm h-32 ${
-                    envJsonError ? 'border-red-500' : 'border-dark-border'
-                  }`}
-                  placeholder='{"API_KEY": "your-key"}'
-                />
-                {envJsonError && (
-                  <p className="text-red-500 text-xs mt-1">{envJsonError}</p>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">Timeout (seconds)</label>
-                  <input
-                    type="number"
-                    value={Math.round((formData.server.timeout || 30000) / 1000)}
-                    onChange={(e) => setFormData({ 
-                      ...formData, 
-                      server: { ...formData.server, timeout: (parseInt(e.target.value) || 30) * 1000 }
-                    })}
-                    className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                    placeholder="30"
-                    min="1"
-                    max="300"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Value in seconds (1-300s)</p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">Retries</label>
-                  <input
-                    type="number"
-                    value={formData.server.retries || 3}
-                    onChange={(e) => setFormData({ 
-                      ...formData, 
-                      server: { ...formData.server, retries: parseInt(e.target.value) || 3 }
-                    })}
-                    className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                    placeholder="3"
-                    min="0"
-                    max="10"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Circuit Breaker Threshold</label>
-                <input
-                  type="number"
-                  value={formData.server.circuitBreakerThreshold || 5}
-                  onChange={(e) => setFormData({ 
-                    ...formData, 
-                    server: { ...formData.server, circuitBreakerThreshold: parseInt(e.target.value) || 5 }
-                  })}
-                  className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                  placeholder="5"
-                  min="1"
-                  max="100"
-                />
-                <p className="text-xs text-gray-500 mt-1">Number of failures before opening circuit</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Fallback Servers (comma-separated)</label>
-                <input
-                  type="text"
-                  value={formData.server.fallbackServers?.join(', ') || ''}
-                  onChange={(e) => setFormData({ 
-                    ...formData, 
-                    server: { 
-                      ...formData.server, 
-                      fallbackServers: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                    }
-                  })}
-                  className="w-full bg-dark-bg border border-dark-border rounded px-4 py-2 text-white"
-                  placeholder="e.g., backup-server-1, backup-server-2"
-                />
-                <p className="text-xs text-gray-500 mt-1">Alternative servers to use if primary fails</p>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  checked={formData.server.disabled || false}
-                  onChange={(e) => setFormData({ 
-                    ...formData, 
-                    server: { ...formData.server, disabled: e.target.checked }
-                  })}
-                  className="w-5 h-5"
-                />
-                <label className="text-sm font-medium">Disabled</label>
-              </div>
-
-              <div className="flex space-x-4 pt-4">
-                <button
-                  onClick={handleSave}
-                  disabled={saveMutation.isPending}
-                  className="bg-green-600 hover:bg-green-700 px-6 py-2 rounded-lg font-semibold disabled:opacity-50"
-                >
-                  {saveMutation.isPending ? 'Saving...' : 'Save'}
-                </button>
-                <button
-                  onClick={() => {
-                    setEditingServer(null);
-                    setShowAddForm(false);
-                  }}
-                  className="bg-gray-600 hover:bg-gray-700 px-6 py-2 rounded-lg font-semibold"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="grid gap-4">
-          {config?.['common-mcp']?.downstreamServers && Object.entries(config['common-mcp'].downstreamServers).map(([serverId, server]) => (
-            <div
-              key={serverId}
-              className="bg-dark-card p-6 rounded-lg border border-dark-border hover:border-dark-hover transition-colors"
+        <div className="flex flex-wrap gap-2 mb-6 border-b border-dark-border">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-4 py-2 -mb-px border-b-2 font-semibold ${
+                tab === t.id ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-white'
+              }`}
             >
-              <div className="flex justify-between items-start">
-                <div className="flex-1">
-                  <div className="flex items-center space-x-4 mb-2">
-                    <h3 className="text-xl font-bold">{serverId}</h3>
-                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                      server.disabled 
-                        ? 'bg-red-900 text-red-200' 
-                        : 'bg-green-900 text-green-200'
-                    }`}>
-                      {server.disabled ? 'DISABLED' : 'ENABLED'}
-                    </span>
-                  </div>
-                  
-                  <div className="text-sm text-gray-400 space-y-1">
-                    <p><span className="font-semibold">Command:</span> {server.command}</p>
-                    {server.args && server.args.length > 0 && (
-                      <p><span className="font-semibold">Args:</span> {server.args.join(' ')}</p>
-                    )}
-                    {server.env && Object.keys(server.env).length > 0 && (
-                      <p><span className="font-semibold">Env:</span> {Object.keys(server.env).join(', ')}</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => toggleMutation.mutate(serverId)}
-                    disabled={toggleMutation.isPending}
-                    className={`px-4 py-2 rounded-lg font-semibold ${
-                      server.disabled
-                        ? 'bg-green-600 hover:bg-green-700'
-                        : 'bg-yellow-600 hover:bg-yellow-700'
-                    } disabled:opacity-50`}
-                  >
-                    {server.disabled ? 'Enable' : 'Disable'}
-                  </button>
-                  <button
-                    onClick={() => handleEdit(serverId, server)}
-                    className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-semibold"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm(`Delete ${serverId}?`)) {
-                        deleteMutation.mutate(serverId);
-                      }
-                    }}
-                    disabled={deleteMutation.isPending}
-                    className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg font-semibold disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-              
-              {/* Inline Edit Form */}
-              {editingServer === serverId && (
-                <div className="mt-4 p-6 bg-dark-bg rounded-lg border-2 border-blue-500">
-                  <h3 className="text-xl font-bold mb-4">Edit: {serverId}</h3>
-                  
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Command</label>
-                      <input
-                        type="text"
-                        value={formData.server.command}
-                        onChange={(e) => setFormData({ 
-                          ...formData, 
-                          server: { ...formData.server, command: e.target.value }
-                        })}
-                        className="w-full bg-dark-card border border-dark-border rounded px-4 py-2 text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Arguments (comma-separated)</label>
-                      <input
-                        type="text"
-                        value={formData.server.args?.join(', ') || ''}
-                        onChange={(e) => setFormData({ 
-                          ...formData, 
-                          server: { ...formData.server, args: e.target.value.split(',').map(s => s.trim()) }
-                        })}
-                        className="w-full bg-dark-card border border-dark-border rounded px-4 py-2 text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Environment Variables (JSON)</label>
-                      <textarea
-                        value={envJsonString}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setEnvJsonString(value);
-                          
-                          // Validate JSON without blocking state update
-                          try {
-                            const env = JSON.parse(value);
-                            setFormData({ 
-                              ...formData, 
-                              server: { ...formData.server, env }
-                            });
-                            setEnvJsonError('');
-                          } catch (err) {
-                            setEnvJsonError('Invalid JSON format');
-                          }
-                        }}
-                        className={`w-full bg-dark-card border rounded px-4 py-2 text-white font-mono text-sm h-32 ${
-                          envJsonError ? 'border-red-500' : 'border-dark-border'
-                        }`}
-                        placeholder='{"API_KEY": "your-key"}'
-                      />
-                      {envJsonError ? (
-                        <p className="text-red-500 text-xs mt-1">{envJsonError}</p>
-                      ) : (
-                        <p className="text-xs text-gray-500 mt-1">Enter environment variables as JSON object</p>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Timeout (seconds)</label>
-                      <input
-                        type="number"
-                        value={Math.round((formData.server.timeout || 30000) / 1000)}
-                        onChange={(e) => setFormData({ 
-                          ...formData, 
-                          server: { ...formData.server, timeout: (parseInt(e.target.value) || 30) * 1000 }
-                        })}
-                        min="1"
-                        max="300"
-                        className="w-full bg-dark-card border border-dark-border rounded px-4 py-2 text-white"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Value in seconds (1-300s)</p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Retries</label>
-                      <input
-                        type="number"
-                        value={formData.server.retries || 3}
-                        onChange={(e) => setFormData({ 
-                          ...formData, 
-                          server: { ...formData.server, retries: parseInt(e.target.value) }
-                        })}
-                        min="0"
-                        max="10"
-                        className="w-full bg-dark-card border border-dark-border rounded px-4 py-2 text-white"
-                      />
-                    </div>
-
-                    <div className="flex items-center space-x-2">
-                      <input
-                        type="checkbox"
-                        checked={formData.server.disabled || false}
-                        onChange={(e) => setFormData({ 
-                          ...formData, 
-                          server: { ...formData.server, disabled: e.target.checked }
-                        })}
-                        className="w-5 h-5"
-                      />
-                      <label className="text-sm font-medium">Disabled</label>
-                    </div>
-
-                    <div className="flex space-x-4 pt-4">
-                      <button
-                        onClick={handleSave}
-                        disabled={saveMutation.isPending}
-                        className="bg-green-600 hover:bg-green-700 px-6 py-2 rounded-lg font-semibold disabled:opacity-50"
-                      >
-                        {saveMutation.isPending ? 'Saving...' : 'Save'}
-                      </button>
-                      <button
-                        onClick={handleCancel}
-                        className="bg-gray-600 hover:bg-gray-700 px-6 py-2 rounded-lg font-semibold"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+              {t.label}
+            </button>
           ))}
         </div>
 
-        {(!config?.['common-mcp']?.downstreamServers || Object.keys(config['common-mcp'].downstreamServers).length === 0) && (
-          <div className="text-center py-12 text-gray-400">
-            <p className="text-xl mb-4">No MCP servers configured</p>
-            <p>Click "Add New MCP" to get started</p>
+        {actionError && (
+          <div className="mb-4 text-sm text-red-200 bg-red-950 border border-red-800 rounded-lg px-4 py-2 flex justify-between gap-4">
+            <span>{actionError}</span>
+            <button onClick={() => setActionError('')} className="text-red-300 hover:text-white">Dismiss</button>
           </div>
+        )}
+
+        {tab === 'servers' && (
+          <>
+            {adding && (
+              <div className="bg-dark-card p-6 rounded-lg border border-dark-border mb-6">
+                <h2 className="text-2xl font-bold mb-4">Add New MCP Server</h2>
+                <ServerForm
+                  initialName=""
+                  initial={NEW_SERVER}
+                  nameEditable
+                  existingNames={serverNames}
+                  otherServerNames={serverNames}
+                  saving={saveMutation.isPending}
+                  saveError={saveMutation.error?.message ?? ''}
+                  onSubmit={(name, server) => saveMutation.mutate({ name, server })}
+                  onCancel={() => setAdding(false)}
+                />
+              </div>
+            )}
+
+            <div className="grid gap-4">
+              {serverNames.map((serverId) => (
+                <ServerCard
+                  key={serverId}
+                  serverId={serverId}
+                  server={servers[serverId]}
+                  toolCounts={toolCounts[serverId]}
+                  busy={toggleMutation.isPending || deleteMutation.isPending}
+                  editing={editing === serverId}
+                  onToggle={() => toggleMutation.mutate(serverId)}
+                  onEdit={() => startEdit(serverId)}
+                  onDelete={() => {
+                    if (confirm(`Delete ${serverId}?`)) deleteMutation.mutate(serverId);
+                  }}
+                >
+                  <ServerForm
+                    initialName={serverId}
+                    initial={servers[serverId]}
+                    nameEditable={false}
+                    existingNames={serverNames}
+                    otherServerNames={serverNames.filter((n) => n !== serverId)}
+                    saving={saveMutation.isPending}
+                    saveError={saveMutation.error?.message ?? ''}
+                    onSubmit={(name, server) => saveMutation.mutate({ name, server })}
+                    onCancel={() => setEditing(null)}
+                  />
+                </ServerCard>
+              ))}
+            </div>
+
+            {serverNames.length === 0 && (
+              <div className="text-center py-12 text-gray-400">
+                <p className="text-xl mb-4">No MCP servers configured</p>
+                <p>Click "Add New MCP" to get started</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === 'tools' && <ToolCatalogPanel data={catalogQuery.data} loading={catalogQuery.isLoading} />}
+        {tab === 'gate' && <GatePanel gate={gatewayConfig?.gate} />}
+        {tab === 'settings' && (
+          <SettingsPanel version={gatewayConfig?.version} globalDefaults={gatewayConfig?.globalDefaults} logging={gatewayConfig?.logging} />
         )}
       </div>
     </div>

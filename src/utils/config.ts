@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { resolve, dirname, join } from 'path';
 import { homedir } from 'os';
-import { GatewayConfig, CommonMCPConfig } from '../types/config';
+import { GatewayConfig, CommonMCPConfig, ProjectPolicy } from '../types/config';
 
 function expandPath(path: string): string {
   const homeDir = homedir();
@@ -73,6 +73,9 @@ function validateAndExpandConfig(config: CommonMCPConfig): CommonMCPConfig {
     if (!Array.isArray(serverConfig.args)) {
       throw new Error(`Config validation error: server "${serverId}" args must be array`);
     }
+    if (serverConfig.retryAttempts === undefined && typeof serverConfig.retries === 'number') {
+      serverConfig.retryAttempts = serverConfig.retries;
+    }
   }
   
   if (config.logging?.file) {
@@ -140,4 +143,131 @@ function getDefaultConfig(): CommonMCPConfig {
       maxFiles: 5
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-project gate policy resolution
+// ---------------------------------------------------------------------------
+
+export interface ProjectContext {
+  matched: 'project' | 'unknown';
+  projectId?: string;
+  projectPath?: string;
+  policyPath?: string;
+  policy: ProjectPolicy;
+}
+
+export function normalizeFsPath(p: string): string {
+  return resolve(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+export function findKnownProject(
+  knownProjects: Record<string, string> | undefined,
+  candidatePath: string
+): { id: string; path: string } | null {
+  if (!knownProjects) return null;
+  const candidate = normalizeFsPath(candidatePath);
+  let best: { id: string; path: string } | null = null;
+  let bestLen = -1;
+  for (const [id, projectPath] of Object.entries(knownProjects)) {
+    const normalized = normalizeFsPath(projectPath);
+    if (candidate === normalized || candidate.startsWith(normalized + '/')) {
+      if (normalized.length > bestLen) {
+        best = { id, path: projectPath };
+        bestLen = normalized.length;
+      }
+    }
+  }
+  return best;
+}
+
+export function getPolicyFilePath(projectPath: string): string {
+  return join(projectPath, '.ai', 'mcp_gate_policy.json');
+}
+
+export function loadProjectPolicy(policyPath: string, expectedProjectId?: string): ProjectPolicy {
+  try {
+    const raw = JSON.parse(readFileSync(policyPath, 'utf-8'));
+    if (expectedProjectId && raw.projectId && raw.projectId !== expectedProjectId) {
+      console.error(`[common-mcp] Policy projectId mismatch in ${policyPath} (expected ${expectedProjectId}, got ${raw.projectId}), ignoring file`);
+      return { version: 1, defaultAllow: true, servers: {} };
+    }
+    return {
+      version: typeof raw.version === 'number' ? raw.version : 1,
+      projectId: raw.projectId,
+      defaultAllow: raw.defaultAllow !== false,
+      servers: raw.servers && typeof raw.servers === 'object' ? raw.servers : {}
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error(`[common-mcp] Warning: failed to read policy ${policyPath}: ${(error as Error).message}`);
+    }
+    return { version: 1, defaultAllow: true, servers: {} };
+  }
+}
+
+export function getUnknownPolicy(config: CommonMCPConfig): ProjectPolicy {
+  const unknown = config.gate?.unknownProjectDefaults;
+  return {
+    version: 1,
+    defaultAllow: unknown?.defaultAllow !== false,
+    servers: unknown?.servers ?? {}
+  };
+}
+
+export function buildProjectContext(
+  config: CommonMCPConfig,
+  projectId: string,
+  projectPath: string
+): ProjectContext {
+  const policyPath = getPolicyFilePath(projectPath);
+  return {
+    matched: 'project',
+    projectId,
+    projectPath,
+    policyPath,
+    policy: loadProjectPolicy(policyPath, projectId)
+  };
+}
+
+export function resolveProjectContext(config: CommonMCPConfig, origin?: { cwd?: string; projectPath?: string }): ProjectContext {
+  const knownProjects = config.gate?.knownProjects;
+
+  // 1. Explicit env override (manual or per-project client configs)
+  const envPath = origin?.projectPath || process.env.COMMON_MCP_PROJECT_PATH;
+  if (envPath) {
+    const found = findKnownProject(knownProjects, envPath);
+    if (found) {
+      return buildProjectContext(config, found.id, found.path);
+    }
+    console.error(`[common-mcp] COMMON_MCP_PROJECT_PATH "${envPath}" is not a registered project, falling back to cwd`);
+  }
+
+  // 2. cwd-based identification: the client spawns the gate with cwd = workspace
+  const cwd = origin?.cwd || process.cwd();
+  const found = findKnownProject(knownProjects, cwd);
+  if (found) {
+    return buildProjectContext(config, found.id, found.path);
+  }
+
+  // 3. Unknown project: global defaults apply
+  return { matched: 'unknown', policy: getUnknownPolicy(config) };
+}
+
+/// `projectOnly` servers (config flag, user request 2026-09-21: "globálisan ne legyen
+/// bekapcsolva, csak egy-egy adott projektnél") require an EXPLICIT `servers[id].enabled: true`
+/// in the resolved policy — neither defaultAllow nor a bare policy entry enables them.
+export function isServerAllowed(policy: ProjectPolicy, serverId: string, projectOnly = false): boolean {
+  const serverPolicy = policy.servers?.[serverId];
+  if (serverPolicy?.enabled !== undefined) return serverPolicy.enabled;
+  if (projectOnly) return false;
+  return policy.defaultAllow;
+}
+
+export function isToolAllowed(policy: ProjectPolicy, serverId: string, toolName: string, projectOnly = false): boolean {
+  const serverPolicy = policy.servers?.[serverId];
+  if (serverPolicy?.enabled !== undefined ? !serverPolicy.enabled : projectOnly) return false;
+  if (!serverPolicy) return policy.defaultAllow;
+  const toolValue = serverPolicy.tools?.[toolName];
+  return toolValue !== undefined ? toolValue : policy.defaultAllow;
 }

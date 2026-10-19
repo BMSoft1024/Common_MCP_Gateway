@@ -63,3 +63,6 @@ temp/
 # package-lock.json
 # yarn.lock
 # pnpm-lock.yaml
+
+# Local config snapshot with API keys, never commit
+Valid_Config.json

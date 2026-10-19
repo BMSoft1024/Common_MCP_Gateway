@@ -1,7 +1,8 @@
 // Quick test client for Common MCP Gateway
 const { spawn } = require('child_process');
 
-const client = spawn('C:\\Users\\mikuc\\AppData\\Roaming\\npm\\common-mcp.cmd', [], {
+// COMMON_MCP_BIN overrides the command, by default the globally installed `common-mcp` from PATH is used.
+const client = spawn(process.env.COMMON_MCP_BIN || 'common-mcp', [], {
   stdio: ['pipe', 'pipe', 'pipe'],
   shell: true
 });

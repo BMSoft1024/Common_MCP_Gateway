@@ -5,79 +5,47 @@ import { Server as SocketIOServer } from 'socket.io';
 import { createServer } from 'http';
 import chokidar from 'chokidar';
 import fs from 'fs';
-import path from 'path';
-import { homedir } from 'os';
 import { z } from 'zod';
+import {
+  CONFIG_PATH,
+  TOOL_CATALOG_PATH,
+  ConfigError,
+  MCPServerSchema,
+  formatZodError,
+  normalizeServer,
+  readConfigFromDisk,
+  updateConfig
+} from './config-store';
+
+const PORT = Number(process.env.PORT) || 1525;
+const HOST = process.env.GATEWAY_MANAGER_HOST || '127.0.0.1';
+const API_SECRET = process.env.GATEWAY_MANAGER_SECRET || 'change-me-in-production';
+const LOCALHOST_ONLY = process.env.GATEWAY_MANAGER_ALLOW_REMOTE !== 'true';
+const UI_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
 const app = express();
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
-  cors: {
-    origin: 'http://localhost:5173',
-    methods: ['GET', 'POST', 'PUT', 'DELETE']
-  }
+  cors: { origin: UI_ORIGINS, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] }
 });
 
-const PORT = 1525;
-const CONFIG_PATH = process.env.COMMON_MCP_CONFIG || path.join(process.env.USERPROFILE || process.env.HOME || '', '.common-mcp', 'config.json');
-const API_SECRET = process.env.GATEWAY_MANAGER_SECRET || 'change-me-in-production';
-const LOCALHOST_ONLY = process.env.GATEWAY_MANAGER_ALLOW_REMOTE !== 'true';
-
-const MCPServerSchema = z.object({
-  command: z.string(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  disabled: z.boolean().optional(),
-  disabledTools: z.array(z.string()).optional(),
-  timeout: z.number().min(1000).max(300000).optional(),
-  retries: z.number().min(0).max(10).optional(),
-  retryAttempts: z.number().min(0).max(10).optional(),
-  circuitBreakerThreshold: z.number().min(1).max(100).optional(),
-  fallbackServers: z.array(z.string()).optional()
-});
-
-const MCPConfigSchema = z.object({
-  'common-mcp': z.object({
-    version: z.string().optional(),
-    globalDefaults: z.object({
-      timeout: z.number().optional(),
-      retryAttempts: z.number().optional(),
-      retryDelay: z.number().optional(),
-      circuitBreaker: z.object({
-        enabled: z.boolean().optional(),
-        failureThreshold: z.number().optional(),
-        resetTimeout: z.number().optional()
-      }).optional()
-    }).optional(),
-    downstreamServers: z.record(MCPServerSchema),
-    logging: z.object({
-      level: z.string().optional(),
-      format: z.string().optional(),
-      file: z.string().optional(),
-      maxSize: z.string().optional(),
-      maxFiles: z.number().optional()
-    }).optional()
-  })
-});
-
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", 'ws://localhost:1525', 'http://localhost:5173']
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'", `ws://localhost:${PORT}`, ...UI_ORIGINS]
+      }
     }
-  }
-}));
-
-app.use(cors({
-  origin: 'http://localhost:5173',
-  credentials: true
-}));
-
+  })
+);
+app.use(cors({ origin: UI_ORIGINS, credentials: true }));
 app.use(express.json());
+
+const LOCAL_HOST_PATTERN = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 function localhostOnlyMiddleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
   if (LOCALHOST_ONLY) {
@@ -85,6 +53,16 @@ function localhostOnlyMiddleware(req: express.Request, res: express.Response, ne
     const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1';
     if (!isLocalhost) {
       res.status(403).json({ error: 'Access denied: localhost only' });
+      return;
+    }
+    // Blocks DNS rebinding (foreign Host) and cross-site requests from other web pages (foreign Origin).
+    if (!LOCAL_HOST_PATTERN.test(req.headers.host || '')) {
+      res.status(403).json({ error: 'Access denied: unexpected Host header' });
+      return;
+    }
+    const origin = req.headers.origin;
+    if (origin && !UI_ORIGINS.includes(origin)) {
+      res.status(403).json({ error: 'Access denied: unexpected Origin' });
       return;
     }
   }
@@ -96,210 +74,188 @@ function apiAuthMiddleware(req: express.Request, res: express.Response, next: ex
     next();
     return;
   }
-  
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Missing Bearer token' });
     return;
   }
-  
-  const token = authHeader.slice(7);
-  if (token !== API_SECRET) {
+  if (authHeader.slice(7) !== API_SECRET) {
     res.status(401).json({ error: 'Invalid token' });
     return;
   }
-  
   next();
 }
 
 app.use(localhostOnlyMiddleware);
 app.use('/api', apiAuthMiddleware);
 
-let currentConfig: any = {};
+const SERVER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 
-function expandPath(configPath: string): string {
-  const homeDir = homedir();
-  return configPath
-    .replace(/\$\{HOME\}/g, homeDir)
-    .replace(/\$HOME/g, homeDir)
-    .replace(/~\//g, homeDir + '/');
-}
-
-function loadConfig() {
-  try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-      const parsed = JSON.parse(raw);
-      
-      // Apply path expansion to logging file path
-      if (parsed['common-mcp']?.logging?.file) {
-        parsed['common-mcp'].logging.file = expandPath(parsed['common-mcp'].logging.file);
-      }
-      
-      currentConfig = parsed;
-      console.log('[CONFIG] Loaded Common MCP configuration from:', CONFIG_PATH);
-      return currentConfig;
-    } else {
-      console.warn('[CONFIG] config.json not found at:', CONFIG_PATH);
-      console.warn('[CONFIG] Creating default configuration...');
-      const defaultConfig = {
-        'common-mcp': {
-          version: '1.0.0',
-          globalDefaults: {
-            timeout: 30000,
-            retryAttempts: 3,
-            retryDelay: 1000,
-            circuitBreaker: {
-              enabled: true,
-              failureThreshold: 5,
-              resetTimeout: 60000
-            }
-          },
-          downstreamServers: {},
-          logging: {
-            level: 'INFO',
-            format: 'json',
-            file: path.join(homedir(), '.common-mcp', 'logs', 'common-mcp.log'),
-            maxSize: '10MB',
-            maxFiles: 5
-          }
-        }
-      };
-      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2), 'utf-8');
-      currentConfig = defaultConfig;
-      return currentConfig;
-    }
-  } catch (error) {
-    console.error('[CONFIG] Error loading configuration:', error);
-    return currentConfig;
+function assertValidServerId(serverId: string): void {
+  if (!SERVER_ID_PATTERN.test(serverId) || RESERVED_IDS.has(serverId)) {
+    throw new ConfigError('Invalid server name: use letters, digits, "-" and "_" (max 64 characters)', 400);
   }
 }
 
-function saveConfig(config: any) {
-  try {
-    const validated = MCPConfigSchema.parse(config);
-    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(validated, null, 2), 'utf-8');
-    currentConfig = validated;
-    io.emit('configUpdate', validated);
-    console.log('[CONFIG] Configuration saved to:', CONFIG_PATH);
-    return true;
-  } catch (error) {
-    console.error('[CONFIG] Error saving config:', error);
-    throw error;
+function sendError(res: express.Response, error: unknown, fallbackStatus = 500): void {
+  if (error instanceof z.ZodError) {
+    res.status(400).json({ error: formatZodError(error) });
+  } else if (error instanceof ConfigError) {
+    res.status(error.status).json({ error: error.message });
+  } else {
+    res.status(fallbackStatus).json({ error: (error as Error).message || 'Unexpected error' });
   }
 }
 
-const watcher = chokidar.watch(CONFIG_PATH, {
-  persistent: true,
-  ignoreInitial: true
-});
-
-watcher.on('change', () => {
-  console.log('[WATCHER] Config file changed, reloading...');
-  const newConfig = loadConfig();
-  io.emit('configUpdate', newConfig);
-});
-
-app.get('/api/config', (req, res) => {
+function readToolCatalog(): { exists: boolean; catalog: unknown } {
   try {
-    const config = loadConfig();
-    res.json(config);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to load configuration' });
+    return { exists: true, catalog: JSON.parse(fs.readFileSync(TOOL_CATALOG_PATH, 'utf-8')) };
+  } catch {
+    return { exists: false, catalog: null };
   }
+}
+
+function broadcastConfig(): void {
+  try {
+    io.emit('configUpdate', readConfigFromDisk());
+  } catch (error) {
+    io.emit('configError', (error as Error).message);
+  }
+}
+
+app.get('/api/status', (_req, res) => {
+  const { exists, catalog } = readToolCatalog();
+  res.json({
+    configPath: CONFIG_PATH,
+    configExists: fs.existsSync(CONFIG_PATH),
+    toolCatalogPath: TOOL_CATALOG_PATH,
+    toolCatalogExists: exists,
+    toolCatalogGeneratedAt: (catalog as { generatedAt?: string } | null)?.generatedAt ?? null
+  });
 });
 
-app.post('/api/config', (req, res) => {
+app.get('/api/config', (_req, res) => {
   try {
-    const newConfig = req.body;
-    saveConfig(newConfig);
-    res.json({ success: true, config: currentConfig });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'Invalid configuration' });
+    res.json(readConfigFromDisk());
+  } catch (error) {
+    sendError(res, error);
   }
 });
 
 app.put('/api/config/server/:serverId', (req, res) => {
   try {
     const { serverId } = req.params;
-    const serverConfig = req.body;
-    
-    const validated = MCPServerSchema.parse(serverConfig);
-    
-    if (!currentConfig['common-mcp']) {
-      currentConfig['common-mcp'] = { downstreamServers: {} };
-    }
-    if (!currentConfig['common-mcp'].downstreamServers) {
-      currentConfig['common-mcp'].downstreamServers = {};
-    }
-    
-    currentConfig['common-mcp'].downstreamServers[serverId] = validated;
-    saveConfig(currentConfig);
-    
-    res.json({ success: true, server: validated });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'Invalid server configuration' });
+    assertValidServerId(serverId);
+    const server = normalizeServer(MCPServerSchema.parse(req.body));
+    updateConfig((config) => {
+      config['common-mcp'].downstreamServers[serverId] = server;
+    });
+    res.json({ success: true, server });
+    broadcastConfig();
+  } catch (error) {
+    sendError(res, error, 400);
   }
 });
 
 app.delete('/api/config/server/:serverId', (req, res) => {
   try {
     const { serverId } = req.params;
-    
-    if (currentConfig['common-mcp']?.downstreamServers?.[serverId]) {
-      delete currentConfig['common-mcp'].downstreamServers[serverId];
-      saveConfig(currentConfig);
-      res.json({ success: true });
-    } else {
+    assertValidServerId(serverId);
+    let found = true;
+    updateConfig((config) => {
+      const servers = config['common-mcp'].downstreamServers;
+      if (servers[serverId]) {
+        delete servers[serverId];
+      } else {
+        found = false;
+      }
+    });
+    if (!found) {
       res.status(404).json({ error: 'Server not found' });
+      return;
     }
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to delete server' });
+    res.json({ success: true });
+    broadcastConfig();
+  } catch (error) {
+    sendError(res, error);
   }
 });
 
 app.patch('/api/config/server/:serverId/toggle', (req, res) => {
   try {
     const { serverId } = req.params;
-    
-    if (currentConfig['common-mcp']?.downstreamServers?.[serverId]) {
-      const server = currentConfig['common-mcp'].downstreamServers[serverId];
-      server.disabled = !server.disabled;
-      saveConfig(currentConfig);
-      res.json({ success: true, disabled: server.disabled });
-    } else {
+    assertValidServerId(serverId);
+    let disabled: boolean | undefined;
+    updateConfig((config) => {
+      const server = config['common-mcp'].downstreamServers[serverId];
+      if (server) {
+        server.disabled = !server.disabled;
+        disabled = server.disabled;
+      }
+    });
+    if (disabled === undefined) {
       res.status(404).json({ error: 'Server not found' });
+      return;
     }
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to toggle server' });
+    res.json({ success: true, disabled });
+    broadcastConfig();
+  } catch (error) {
+    sendError(res, error);
   }
 });
 
-app.get('/api/config/validate', (req, res) => {
+app.get('/api/config/validate', (_req, res) => {
   try {
-    const validated = MCPConfigSchema.parse(currentConfig);
-    res.json({ valid: true, config: validated });
-  } catch (error: any) {
-    res.status(400).json({ valid: false, errors: error.errors });
+    res.json({ valid: true, config: readConfigFromDisk() });
+  } catch (error) {
+    res.status(400).json({ valid: false, error: (error as Error).message });
   }
+});
+
+app.get('/api/tool-catalog', (_req, res) => {
+  const { exists, catalog } = readToolCatalog();
+  res.json({ exists, path: TOOL_CATALOG_PATH, catalog });
 });
 
 io.on('connection', (socket) => {
   console.log('[SOCKET] Client connected:', socket.id);
-  
-  socket.emit('configUpdate', currentConfig);
-  
-  socket.on('disconnect', () => {
-    console.log('[SOCKET] Client disconnected:', socket.id);
-  });
+  try {
+    socket.emit('configUpdate', readConfigFromDisk());
+  } catch (error) {
+    socket.emit('configError', (error as Error).message);
+  }
+  socket.on('disconnect', () => console.log('[SOCKET] Client disconnected:', socket.id));
 });
 
-loadConfig();
+// chokidar handles atomic replace (temp+rename) writes; the catalog may not exist yet, so react to 'add' too.
+function watchFile(filePath: string, onChange: () => void): void {
+  chokidar
+    .watch(filePath, { persistent: true, ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 150 } })
+    .on('add', onChange)
+    .on('change', onChange);
+}
 
-httpServer.listen(PORT, '127.0.0.1', () => {
-  console.log(`[SERVER] MCP Marketplace UI running on http://127.0.0.1:${PORT}`);
+watchFile(CONFIG_PATH, () => {
+  console.log('[WATCHER] Config file changed, broadcasting');
+  broadcastConfig();
+});
+
+watchFile(TOOL_CATALOG_PATH, () => {
+  console.log('[WATCHER] Tool catalog changed, broadcasting');
+  io.emit('catalogUpdate', readToolCatalog());
+});
+
+try {
+  readConfigFromDisk();
+  console.log('[CONFIG] Loaded Common MCP configuration from:', CONFIG_PATH);
+} catch (error) {
+  console.error('[CONFIG] Initial load failed:', (error as Error).message);
+}
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`[SERVER] Common MCP Gateway Manager API running on http://${HOST}:${PORT}`);
   console.log(`[CONFIG] Watching: ${CONFIG_PATH}`);
-  console.log(`[SOCKET] WebSocket ready for live updates`);
+  console.log(`[CATALOG] Watching: ${TOOL_CATALOG_PATH}`);
+  console.log('[SOCKET] WebSocket ready for live updates');
 });

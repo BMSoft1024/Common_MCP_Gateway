@@ -6,7 +6,7 @@ async function main() {
 
   const transport = new StdioClientTransport({
     command: 'node',
-    args: ['g:/M_Programming/AI_Project/BMSoft1024_Common_MCP/main/Common_MCP/dist/index.js'],
+    args: [require('path').join(__dirname, '..', '..', 'dist', 'index.js')],
     env: process.env
   });
 

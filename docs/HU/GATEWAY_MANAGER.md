@@ -65,8 +65,8 @@ pm2 start ecosystem.config.js
 pm2 status
 
 # Logok megtekintése
-pm2 logs mcp-marketplace-backend
-pm2 logs mcp-marketplace-frontend
+pm2 logs gateway-manager-backend
+pm2 logs gateway-manager-frontend
 
 # Minden leállítása
 pm2 stop all
@@ -184,7 +184,7 @@ A változások azonnal mentésre kerülnek és WebSocket-en keresztül minden kl
 
 ## WebSocket Élő Frissítés
 
-A Marketplace UI WebSocket kapcsolatot használ a backend-del:
+A Gateway Manager UI WebSocket kapcsolatot használ a backend-del:
 - **Port:** 1525
 - **Event:** `configUpdate`
 - **Működés:** Minden config változás után broadcast minden kliensnek
@@ -273,7 +273,7 @@ pm2 save
 
 ## Támogatás
 
-Ha problémád van a Marketplace UI-val:
+Ha problémád van a Gateway Manager UI-val:
 1. Ellenőrizd ezt a dokumentációt
 2. Nézd meg a logokat: `pm2 logs` vagy backend/frontend konzol
 3. Ellenőrizd a config fájl szintaxisát

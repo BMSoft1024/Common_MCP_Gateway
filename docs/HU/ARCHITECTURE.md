@@ -111,7 +111,7 @@
         "retryAttempts": 2
       },
       "fetch": {
-        "command": "C:\\\\Users\\\\mikuc\\\\AppData\\\\Roaming\\\\Python\\\\Python313\\\\Scripts\\\\uvx.exe",
+        "command": "C:\\\\Users\\\\<user>\\\\AppData\\\\Roaming\\\\Python\\\\Python313\\\\Scripts\\\\uvx.exe",
         "args": ["mcp-server-fetch"],
         "timeout": 30000,
         "retryAttempts": 3
@@ -274,7 +274,7 @@ npm install -g @bm-soft/common-mcp-gateway
       "command": "common-mcp",
       "args": [],
       "env": {
-        "COMMON_MCP_CONFIG": "C:\\Users\\mikuc\\.common-mcp\\config.json",
+        "COMMON_MCP_CONFIG": "C:\\Users\\<user>\\.common-mcp\\config.json",
         "COMMON_MCP_LOG_LEVEL": "INFO"
       },
       "disabled": false

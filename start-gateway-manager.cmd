@@ -5,6 +5,19 @@ echo.
 
 cd /d "%~dp0"
 
+if not exist "gateway-manager\backend\node_modules" (
+  echo Installing backend dependencies...
+  pushd "gateway-manager\backend"
+  call npm install --no-audit --no-fund
+  popd
+)
+if not exist "gateway-manager\frontend\node_modules" (
+  echo Installing frontend dependencies...
+  pushd "gateway-manager\frontend"
+  call npm install --no-audit --no-fund
+  popd
+)
+
 echo [1/2] Starting Backend (port 1525)...
 start "Gateway Backend" cmd /k "cd gateway-manager\backend && npm run dev"
 timeout /t 3 /nobreak > nul
