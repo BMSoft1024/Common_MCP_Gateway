@@ -238,7 +238,7 @@ export class CommonMCPGateway {
       });
     }
     if (this.context.matched === 'project' && this.context.policyPath && this.context.projectId) {
-      this.context.policy = loadProjectPolicy(this.context.policyPath, this.context.projectId);
+      this.context.policy = loadProjectPolicy(this.context.policyPath, this.context.projectId, this.context.policy);
     } else {
       const reloaded = resolveProjectContext(this.config, this.origin);
       this.context = reloaded;

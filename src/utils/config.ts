@@ -185,12 +185,20 @@ export function getPolicyFilePath(projectPath: string): string {
   return join(projectPath, '.ai', 'mcp_gate_policy.json');
 }
 
-export function loadProjectPolicy(policyPath: string, expectedProjectId?: string): ProjectPolicy {
+/** Nothing is allowed. Used when a policy file exists but cannot be trusted, so a damaged file never widens access. */
+export const DENY_ALL_POLICY: ProjectPolicy = { version: 1, defaultAllow: false, servers: {} };
+
+/**
+ * A missing policy file allows everything (documented default). A file that exists but is unreadable, damaged or
+ * belongs to another project is NOT treated as "no policy": it falls back to `fallback` (deny everything, or on a
+ * live reload the policy that was active before), so a half-written or tampered file cannot switch restrictions off.
+ */
+export function loadProjectPolicy(policyPath: string, expectedProjectId?: string, fallback: ProjectPolicy = DENY_ALL_POLICY): ProjectPolicy {
   try {
     const raw = JSON.parse(readFileSync(policyPath, 'utf-8'));
     if (expectedProjectId && raw.projectId && raw.projectId !== expectedProjectId) {
-      console.error(`[common-mcp] Policy projectId mismatch in ${policyPath} (expected ${expectedProjectId}, got ${raw.projectId}), ignoring file`);
-      return { version: 1, defaultAllow: true, servers: {} };
+      console.error(`[common-mcp] Policy projectId mismatch in ${policyPath} (expected ${expectedProjectId}, got ${raw.projectId}), using the fallback policy`);
+      return fallback;
     }
     return {
       version: typeof raw.version === 'number' ? raw.version : 1,
@@ -199,10 +207,11 @@ export function loadProjectPolicy(policyPath: string, expectedProjectId?: string
       servers: raw.servers && typeof raw.servers === 'object' ? raw.servers : {}
     };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error(`[common-mcp] Warning: failed to read policy ${policyPath}: ${(error as Error).message}`);
-    }
-    return { version: 1, defaultAllow: true, servers: {} };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return { version: 1, defaultAllow: true, servers: {} };
+
+    console.error(`[common-mcp] Warning: failed to read policy ${policyPath}: ${(error as Error).message}, using the fallback policy`);
+    return fallback;
   }
 }
 

@@ -5,6 +5,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import { createServer } from 'http';
 import chokidar from 'chokidar';
 import fs from 'fs';
+import { timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import {
   CONFIG_PATH,
@@ -26,7 +27,16 @@ const UI_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 const app = express();
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
-  cors: { origin: UI_ORIGINS, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] }
+  cors: { origin: UI_ORIGINS, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+  // Express middleware does not see /socket.io requests, and browsers do not apply CORS to WebSocket handshakes,
+  // so any web page could read the configuration (including env secrets) over the socket without this check.
+  allowRequest: (req, callback) => {
+    const problem = localRequestProblem(req.socket.remoteAddress, req.headers.host, req.headers.origin);
+    if (problem)
+      console.warn(`[SOCKET] Rejected connection: ${problem}`);
+
+    callback(null, problem === null);
+  }
 });
 
 app.use(
@@ -47,25 +57,32 @@ app.use(express.json());
 
 const LOCAL_HOST_PATTERN = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
+/** Why a request must be refused in localhost-only mode, or null when it may pass. Shared by the REST API and the socket. */
+function localRequestProblem(remoteAddress: string | undefined, host: string | undefined, origin: string | undefined): string | null {
+  if (!LOCALHOST_ONLY)
+    return null;
+
+  const clientIp = remoteAddress || '';
+  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1')
+    return 'localhost only';
+
+  // Blocks DNS rebinding (foreign Host) and cross-site requests from other web pages (foreign Origin).
+  if (!LOCAL_HOST_PATTERN.test(host || ''))
+    return 'unexpected Host header';
+
+  if (origin && !UI_ORIGINS.includes(origin))
+    return 'unexpected Origin';
+
+  return null;
+}
+
 function localhostOnlyMiddleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
-  if (LOCALHOST_ONLY) {
-    const clientIp = req.ip || req.socket.remoteAddress || '';
-    const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1';
-    if (!isLocalhost) {
-      res.status(403).json({ error: 'Access denied: localhost only' });
-      return;
-    }
-    // Blocks DNS rebinding (foreign Host) and cross-site requests from other web pages (foreign Origin).
-    if (!LOCAL_HOST_PATTERN.test(req.headers.host || '')) {
-      res.status(403).json({ error: 'Access denied: unexpected Host header' });
-      return;
-    }
-    const origin = req.headers.origin;
-    if (origin && !UI_ORIGINS.includes(origin)) {
-      res.status(403).json({ error: 'Access denied: unexpected Origin' });
-      return;
-    }
+  const problem = localRequestProblem(req.ip || req.socket.remoteAddress, req.headers.host, req.headers.origin);
+  if (problem) {
+    res.status(403).json({ error: `Access denied: ${problem}` });
+    return;
   }
+
   next();
 }
 
@@ -79,7 +96,9 @@ function apiAuthMiddleware(req: express.Request, res: express.Response, next: ex
     res.status(401).json({ error: 'Missing Bearer token' });
     return;
   }
-  if (authHeader.slice(7) !== API_SECRET) {
+  const given = Buffer.from(authHeader.slice(7));
+  const expected = Buffer.from(API_SECRET);
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
     res.status(401).json({ error: 'Invalid token' });
     return;
   }
@@ -251,6 +270,12 @@ try {
   console.log('[CONFIG] Loaded Common MCP configuration from:', CONFIG_PATH);
 } catch (error) {
   console.error('[CONFIG] Initial load failed:', (error as Error).message);
+}
+
+if (!LOCALHOST_ONLY && API_SECRET === 'change-me-in-production') {
+  // The API can add a downstream server with an arbitrary command, so it must never be open to the network.
+  console.error('[SERVER] GATEWAY_MANAGER_ALLOW_REMOTE=true requires GATEWAY_MANAGER_SECRET, refusing to start');
+  process.exit(1);
 }
 
 httpServer.listen(PORT, HOST, () => {

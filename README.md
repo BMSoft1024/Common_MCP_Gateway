@@ -117,7 +117,7 @@ The optional `gate` section of `config.json` decides which servers and tools a p
 
 - The project is detected from the client's working directory, or from `COMMON_MCP_PROJECT_PATH`. Without a match, `unknownProjectDefaults` apply and every client lists all enabled servers and tools.
 - Optional strict mode for Claude Desktop (no usable working directory): set `"requireContextDeclaration": true` in the `gate` section. Claude Desktop then sees only `gate__set_project_context` (plus `alwaysVisibleTools`) until it calls that meta tool with the project root path. The default is `false`, no client has to declare a project.
-- A project's policy is read from `<project>/.ai/mcp_gate_policy.json` (`defaultAllow`, per server `enabled` and per tool switches). A missing file allows everything.
+- A project's policy is read from `<project>/.ai/mcp_gate_policy.json` (`defaultAllow`, per server `enabled` and per tool switches). A missing file allows everything, but a file that exists and is damaged, unreadable or carries another project's `projectId` is never treated as "no policy": a new session gets no tools until the file is fixed, and a live session keeps its previous policy.
 - A downstream server marked `"projectOnly": true` is off everywhere unless a policy enables it explicitly.
 - The complete tool list of all servers, including policy-disabled ones, is written to `~/.common-mcp/tool-catalog.json` for UIs.
 

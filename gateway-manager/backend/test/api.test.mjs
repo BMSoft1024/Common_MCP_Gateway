@@ -150,3 +150,32 @@ test('foreign Origin and foreign Host headers are rejected', async () => {
   assert.equal(status, 403);
   assert.equal((await call('/api/config', { headers: { Origin: 'http://localhost:5173' } })).status, 200);
 });
+
+test('the websocket refuses foreign origins and hosts, so a web page cannot read the configuration', async () => {
+  const { default: WebSocket } = await import('ws');
+  const url = `ws://127.0.0.1:${PORT}/socket.io/?EIO=4&transport=websocket`;
+  const attempt = (headers) =>
+    new Promise((resolve) => {
+      let received = '';
+      const ws = new WebSocket(url, { headers });
+      ws.on('open', () => ws.send('40'));
+      ws.on('message', (data) => (received += data));
+      ws.on('error', () => resolve({ rejected: true, received }));
+      ws.on('unexpected-response', () => resolve({ rejected: true, received }));
+      ws.on('close', () => resolve({ rejected: received === '', received }));
+      setTimeout(() => {
+        ws.terminate();
+        resolve({ rejected: received === '', received });
+      }, 2000);
+    });
+
+  const foreign = await attempt({ Origin: 'http://evil.example' });
+  assert.ok(foreign.rejected, 'a foreign Origin must not receive anything');
+  assert.ok(!foreign.received.includes('alpha'), 'no configuration data may reach a foreign Origin');
+
+  const rebinding = await attempt({ Host: 'evil.example' });
+  assert.ok(rebinding.rejected, 'a foreign Host must not receive anything');
+
+  const allowed = await attempt({ Origin: 'http://localhost:5173' });
+  assert.ok(allowed.received.includes('alpha'), 'the bundled UI origin still receives the configuration');
+});

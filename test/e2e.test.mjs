@@ -155,6 +155,31 @@ test('policy file changes apply live and only to the affected project', async ()
   assert.ok((await names(b.client)).includes('echo__echo'), 'other project unaffected');
 });
 
+test('a damaged or foreign policy file never widens access (fail closed, live reload keeps the previous policy)', async () => {
+  await closeAllClients();
+  const restrictive = JSON.stringify({ version: 1, projectId: 'pA', defaultAllow: true, servers: { echo: { enabled: false } } });
+  writeFileSync(policyFile, restrictive);
+
+  const live = await connect(vA, projA);
+  assert.ok(!(await names(live.client)).some((n) => n.startsWith('echo__')), 'restrictive policy hides echo');
+
+  // A half-written file during a live reload must not switch the restriction off.
+  writeFileSync(policyFile, '{ "version": 1, "servers": { "echo": ');
+  await sleep(2500);
+  assert.ok(!(await names(live.client)).some((n) => n.startsWith('echo__')), 'live session keeps the previous policy');
+
+  // A new session that meets the damaged file gets no tools at all instead of everything.
+  const fresh = await connect(vA, projA);
+  assert.ok(!(await names(fresh.client)).some((n) => n.startsWith('echo__')), 'damaged file denies instead of allowing');
+
+  // A policy copied from another project is not trusted either.
+  writeFileSync(policyFile, JSON.stringify({ version: 1, projectId: 'someone-else', defaultAllow: true, servers: {} }));
+  const foreign = await connect(vA, projA);
+  assert.ok(!(await names(foreign.client)).some((n) => n.startsWith('echo__')), 'foreign projectId denies instead of allowing');
+
+  writeFileSync(policyFile, restrictive);
+});
+
 test('an old daemon is replaced by a newer bridge when no client is connected', async () => {
   await closeAllClients();
   assert.ok(await waitUntil(async () => (await health()).sessions === 0), 'all sessions closed');

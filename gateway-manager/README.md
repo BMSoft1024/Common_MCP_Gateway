@@ -13,6 +13,8 @@ Web admin UI for the Common MCP Gateway configuration (`~/.common-mcp/config.jso
 
 ## Safe saving
 
+The API and the live socket only answer requests from localhost with a localhost `Host` and the bundled UI `Origin`, so a web page the browser has open cannot read or change the configuration. `GATEWAY_MANAGER_ALLOW_REMOTE=true` is refused unless `GATEWAY_MANAGER_SECRET` is set.
+
 Saving always re-reads the file from disk and changes only the edited server, so the `gate` section, logging, health checks and any other fields written by other tools are preserved. The file is replaced atomically and the previous content is kept as `config.json.bak`. The legacy `retries` field is stored as `retryAttempts`; the gateway accepts both when loading.
 
 ## Start
